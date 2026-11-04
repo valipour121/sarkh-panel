@@ -1,0 +1,7 @@
+# فایل‌های محلیِ پنل: شامل کوکی/توکن حساب‌ها و لاگ‌ها؛ هرگز در ریپوی عمومی نگذار
+accounts.json
+panel_settings.json
+panel_last_state.json
+panel_history/
+*.tmp
+__pycache__/
