@@ -1,0 +1,62 @@
+[
+ {
+  "id": "id-1",
+  "name": "A1-https-json",
+  "broker": "saman",
+  "enabled": true,
+  "header": "curl 'https://127.0.0.1:18443/order' -H 'accept: application/json' -H 'content-type: application/json' -b 'sid=abc; tok=xyz'  --data-raw $'{\"symbol\":\"IRO1\",\"quantity\":620,\"price\":1000,\"note\":\"\\u0633\\u0644\\u0627\\u0645\"}'",
+  "order": {
+   "interval_ms": 320,
+   "trigger": 9800,
+   "count": 5
+  }
+ },
+ {
+  "id": "id-2",
+  "name": "A2-http-form",
+  "broker": "mofid",
+  "enabled": true,
+  "header": "curl 'http://127.0.0.1:18080/order' -H 'content-type: application/x-www-form-urlencoded' --data-raw 'a=1&volume=100&b=2'",
+  "order": {
+   "interval_ms": 320,
+   "trigger": 9800,
+   "count": 5
+  }
+ },
+ {
+  "id": "id-3",
+  "name": "A3-gzip-chunked",
+  "broker": "exir",
+  "enabled": true,
+  "header": "curl 'https://127.0.0.1:18443/gz' -H 'accept: application/json' -H 'content-type: application/json' -b 'sid=abc; tok=xyz'  --data-raw $'{\"quantity\":50}'",
+  "order": {
+   "interval_ms": 320,
+   "trigger": 9800,
+   "count": 5
+  }
+ },
+ {
+  "id": "id-4",
+  "name": "A4-errcode",
+  "broker": "karizma",
+  "enabled": true,
+  "header": "curl 'https://127.0.0.1:18443/err' -H 'accept: application/json' -H 'content-type: application/json' -b 'sid=abc; tok=xyz'  --data-raw $'{\"qty\":9}'",
+  "order": {
+   "interval_ms": 320,
+   "trigger": 9800,
+   "count": 5
+  }
+ },
+ {
+  "id": "id-5",
+  "name": "A5-ticket",
+  "broker": "nahayatnegar",
+  "enabled": true,
+  "header": "curl 'https://127.0.0.1:18443/ticket' -H 'accept: application/json' -H 'content-type: application/json' -b 'sid=abc; tok=xyz'  --data-raw $'{\"symbol\":\"X\",\"volume\":50,\"diffVolume\":50,\"grandTotal\":5000,\"orderTicket\":\"T0\",\"ticketGeneration\":0}'",
+  "order": {
+   "interval_ms": 320,
+   "trigger": 9800,
+   "count": 5
+  }
+ }
+]
