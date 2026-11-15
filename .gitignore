@@ -5,3 +5,6 @@ panel_last_state.json
 panel_history/
 *.tmp
 __pycache__/
+results_push.json
+results/
+panel_last_run.json
