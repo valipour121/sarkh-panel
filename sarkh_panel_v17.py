@@ -1630,15 +1630,18 @@ GUIDE_TEXT = """راهنمای گرفتن هدر درخواست از مرورگ�
 """
 
 
-GUIDE_RESULTS_TEXT = """نتایج روزانه (CSV) — ورژن ۱۷
-=================================
+GUIDE_RESULTS_TEXT = """نتایج روزانه (CSV و اکسل تجمعی) — ورژن ۱۷
+==========================================
 بعد از پایان ارسال‌ها، دکمه‌ی «📊 ساخت CSV نتایج» (بالای پنل) برای هر حساب یک ردیف می‌سازد
 و در یک پنجره‌ی قابل‌ویرایش نشان می‌دهد (روی هر خانه دابل‌کلیک = ویرایش، Enter = ثبت).
 «رتبه» خالی ساخته می‌شود تا دستی پر کنید. «نام نماد» و «سختی نماد» را می‌توانید بالای جدول
-یک‌جا برای همه‌ی ردیف‌ها بنویسید. ستون «جزئیات درخواست‌ها» زمان و نتیجه‌ی تک‌تک درخواست‌هاست
-(برای تخمین زمان باز شدن بازار). فایل در پوشه‌ی results کنار برنامه ذخیره می‌شود.
-دکمه‌ی «پوش به ریپو» همان فایل را با کلید (توکن) گیت‌هاب روی ریپو می‌گذارد؛ کلید را می‌توانید
-همان بالای جدول عوض کنید و فقط در results_push.json کنار برنامه می‌ماند (آن را در گیت‌هاب نگذارید).
+یک‌جا برای همه‌ی ردیف‌ها بنویسید. ستون «جزئیات درخواست‌ها» زمان و نتیجه‌ی تک‌تک درخواست‌هاست.
+CSV امروز در پوشه‌ی results کنار برنامه ذخیره می‌شود.
+دکمه‌ی «افزودن به اکسل تجمعی در ریپو» ردیف‌های همین جدول را به فایل sarkhat_result.xlsx در ریپوی
+پنل اضافه می‌کند (اگر فایل نبود می‌سازد). اگر همان روز را دوباره بفرستید، ردیف‌های قبلیِ همان
+تاریخ جایگزین می‌شوند و تکراری نمی‌ماند. این کار به کتابخانه‌ی openpyxl نیاز دارد:  pip install openpyxl
+کلید (توکن) گیت‌هاب را می‌توانید همان بالای جدول عوض کنید؛ فقط در results_push.json کنار برنامه
+می‌ماند (آن را در گیت‌هاب نگذارید).
 """
 
 
@@ -2927,8 +2930,10 @@ class LogWindow(tk.Toplevel):
 RESULTS_DIR = os.path.join(STATE_DIR, "results")
 RESULT_PUSH_PATH = os.path.join(STATE_DIR, "results_push.json")   # کلید (توکن) فقط اینجا و فقط روی همین کامپیوتر می‌ماند
 LAST_RUN_PATH = os.path.join(STATE_DIR, "panel_last_run.json")
-DEFAULT_RESULT_REPO = "valipour121/sarkhat_result"
-DEFAULT_RESULT_FOLDER = "results"
+DEFAULT_RESULT_REPO = "valipour121/sarkh-panel"       # همین ریپوی پنل
+DEFAULT_RESULT_XLSX = "sarkhat_result.xlsx"           # یک اکسلِ تجمعی؛ نتایج هر روز به آن اضافه می‌شود
+RESULT_SHEET = "نتایج"
+RESULT_NUMERIC_COLS = ("رتبه", "تعداد درخواست")       # در اکسل به‌صورت عدد ذخیره می‌شوند
 GITHUB_API = os.environ.get("SARKH_GITHUB_API", "https://api.github.com")   # فقط برای تست قابل تغییر است
 RESULT_COLUMNS = ["تاریخ", "نام کاربر", "رتبه", "نتیجه", "نام کارگزار", "نام نماد", "سختی نماد",
                   "تریگر", "زمان ارسال", "ورژن برنامه (تکنولوژی)", "تعداد درخواست", "جزئیات درخواست‌ها"]
@@ -3038,6 +3043,12 @@ def read_results_csv(path):
     return data[0], data[1:]
 
 
+class GithubError(Exception):
+    def __init__(self, msg, status=0):
+        super().__init__(msg)
+        self.status = status
+
+
 def _github_error(r):
     try:
         msg = r.json().get("message", "")
@@ -3050,37 +3061,142 @@ def _github_error(r):
     return f"HTTP {r.status_code}: {msg}{extra}"
 
 
-def github_put_file(token, repo, path, content, message, branch="", timeout=20):
-    """یک فایل را با Contents API گیت‌هاب می‌سازد/به‌روز می‌کند. خروجی: (True, لینک) یا (False, پیام خطا)."""
-    path = path.strip("/")
-    url = f"{GITHUB_API}/repos/{repo}/contents/{urllib.parse.quote(path)}"
-    hdr = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-           "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "sarkh-panel"}
+def _gh_headers(token, raw=False):
+    return {"Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.raw+json" if raw else "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "sarkh-panel"}
+
+
+def _gh_url(repo, path):
+    return f"{GITHUB_API}/repos/{repo}/contents/{urllib.parse.quote(path.strip('/'))}"
+
+
+def github_get_file(token, repo, path, branch="", timeout=30):
+    """(بایت‌ها، sha) یا (None, None) اگر فایل هنوز نیست. خطا: GithubError."""
+    url = _gh_url(repo, path)
     params = {"ref": branch} if branch else {}
+    r = requests.get(url, headers=_gh_headers(token), params=params, timeout=timeout)
+    if r.status_code == 404:
+        return None, None
+    if r.status_code != 200:
+        raise GithubError(_github_error(r), r.status_code)
+    info = r.json()
+    if not isinstance(info, dict):
+        raise GithubError("این مسیر یک پوشه است، نه فایل.", 400)
+    b64 = (info.get("content") or "").replace("\n", "")
+    if b64 and info.get("encoding") == "base64":
+        data = base64.b64decode(b64)
+    else:   # فایل‌های بزرگ‌تر از ۱ مگابایت در پاسخ JSON محتوا ندارند؛ نسخه‌ی خام را می‌گیریم
+        r2 = requests.get(url, headers=_gh_headers(token, raw=True), params=params, timeout=timeout)
+        if r2.status_code != 200:
+            raise GithubError(_github_error(r2), r2.status_code)
+        data = r2.content
+    return data, info.get("sha")
+
+
+def github_put_bytes(token, repo, path, content, message, sha=None, branch="", timeout=30):
+    url = _gh_url(repo, path)
+    payload = {"message": message, "content": base64.b64encode(content).decode("ascii")}
+    if sha:
+        payload["sha"] = sha
+    if branch:
+        payload["branch"] = branch
+    r = requests.put(url, headers=_gh_headers(token), json=payload, timeout=timeout)
+    if r.status_code in (200, 201):
+        try:
+            html = (r.json().get("content") or {}).get("html_url", "")
+        except Exception:
+            html = ""
+        return html or f"https://github.com/{repo}/blob/{branch or 'main'}/{path.strip('/')}"
+    raise GithubError(_github_error(r), r.status_code)
+
+
+def _cell_date_str(v):
+    if hasattr(v, "strftime"):
+        return v.strftime("%Y-%m-%d")
+    return str(v if v is not None else "").strip()
+
+
+def _xl_value(header_name, v):
+    v = "" if v is None else str(v)
+    if header_name in RESULT_NUMERIC_COLS and re.fullmatch(r"-?\d{1,9}", v.strip()):
+        return int(v.strip())
+    return v
+
+
+def xlsx_merge_rows(existing_bytes, header, rows):
+    """نتایج را به اکسل تجمعی اضافه می‌کند (یا اگر فایل نبود، می‌سازد).
+    ردیف‌های قبلیِ هم‌تاریخ با ردیف‌های جدید جایگزین می‌شوند (پوش دوباره‌ی همان روز تکراری نمی‌سازد).
+    خروجی: (بایت‌های اکسل، تعداد ردیف جایگزین‌شده)"""
     try:
-        r = requests.get(url, headers=hdr, params=params, timeout=timeout)
-        sha = None
-        if r.status_code == 200:
-            info = r.json()
-            if isinstance(info, dict):
-                sha = info.get("sha")
-        elif r.status_code != 404:
-            return False, _github_error(r)
-        payload = {"message": message, "content": base64.b64encode(content).decode("ascii")}
-        if sha:
-            payload["sha"] = sha          # فایل هم‌نام موجود است: به‌روزرسانی (بازنویسی)
-        if branch:
-            payload["branch"] = branch
-        r2 = requests.put(url, headers=hdr, json=payload, timeout=timeout)
-        if r2.status_code in (200, 201):
+        import openpyxl
+        from openpyxl.styles import Font
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        raise RuntimeError("برای کار با اکسل کتابخانه‌ی openpyxl لازم است؛ در CMD بزنید:  pip install openpyxl")
+    from io import BytesIO
+    header = [str(h) for h in header]
+    new_file = not existing_bytes
+    if new_file:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = RESULT_SHEET
+    else:
+        wb = openpyxl.load_workbook(BytesIO(existing_bytes))
+        ws = wb[RESULT_SHEET] if RESULT_SHEET in wb.sheetnames else wb.active
+    if ws.max_row == 1 and all(c.value is None for c in ws[1]):
+        for j, h in enumerate(header, 1):
+            ws.cell(row=1, column=j, value=h).font = Font(bold=True)
+            ws.column_dimensions[get_column_letter(j)].width = 14 if j != len(header) else 60
+        ws.freeze_panes = "A2"
+        ws.sheet_view.rightToLeft = True
+    else:
+        have = [str(ws.cell(row=1, column=j).value or "").strip() for j in range(1, len(header) + 1)]
+        if have != [h.strip() for h in header]:
+            raise ValueError("سرستون‌های فایل اکسل با سرستون‌های CSV یکی نیست؛ ستون‌ها را جابه‌جا/حذف نکنید.")
+    dates = {_cell_date_str(r[0]) for r in rows if r and _cell_date_str(r[0])}
+    replaced = 0
+    nxt = ws.max_row + 1
+    if dates and ws.max_row > 1:
+        old = list(ws.iter_rows(min_row=2, max_col=len(header), values_only=True))
+        keep = [r for r in old if _cell_date_str(r[0]) not in dates]
+        replaced = len(old) - len(keep)
+        if replaced:
+            ws.delete_rows(2, ws.max_row)
+            for i, r in enumerate(keep, 2):
+                for j, v in enumerate(r, 1):
+                    ws.cell(row=i, column=j, value=v)
+            nxt = len(keep) + 2
+    for r in rows:
+        for j, v in enumerate(list(r) + [""] * (len(header) - len(r)), 1):
+            ws.cell(row=nxt, column=j, value=_xl_value(header[j - 1] if j <= len(header) else "", v))
+        nxt += 1
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue(), replaced
+
+
+def github_append_results(token, repo, path, header, rows, message, branch="", timeout=30):
+    """فایل اکسل تجمعی را از ریپو می‌گیرد، ردیف‌ها را اضافه می‌کند و دوباره می‌گذارد.
+    خروجی: (True، لینک، تعداد ردیف جایگزین‌شده) یا (False، پیام خطا، 0)"""
+    try:
+        for attempt in range(2):
             try:
-                html = (r2.json().get("content") or {}).get("html_url", "")
-            except Exception:
-                html = ""
-            return True, html or f"https://github.com/{repo}/blob/{branch or 'main'}/{path}"
-        return False, _github_error(r2)
+                data, sha = github_get_file(token, repo, path, branch, timeout)
+                new_bytes, replaced = xlsx_merge_rows(data, header, rows)
+                url = github_put_bytes(token, repo, path, new_bytes, message, sha, branch, timeout)
+                return True, url, replaced
+            except GithubError as e:
+                if attempt == 0 and e.status in (409, 422):
+                    continue   # هم‌زمانی: فایل بین خواندن و نوشتن عوض شده؛ یک بار دیگر از اول
+                return False, str(e), 0
+    except (RuntimeError, ValueError) as e:
+        return False, str(e), 0
     except requests.RequestException as e:
-        return False, f"خطای شبکه: {e}"
+        return False, f"خطای شبکه: {e}", 0
+    except Exception as e:
+        return False, f"خطای غیرمنتظره در ساخت/خواندن اکسل: {e}", 0
+    return False, "ناموفق", 0
 
 
 class ResultsWindow(tk.Toplevel):
@@ -3089,14 +3205,14 @@ class ResultsWindow(tk.Toplevel):
     def __init__(self, app, path, header, rows):
         super().__init__(app)
         self.app = app
-        self.title("نتایج روزانه (CSV) — ویرایش، ذخیره و پوش")
+        self.title("نتایج روزانه (CSV) — ویرایش، ذخیره و افزودن به اکسل تجمعی")
         self.geometry("1180x600")
         self.header = list(header) or list(RESULT_COLUMNS)
         self.rows = [list(r) + [""] * (len(self.header) - len(r)) for r in rows]
         cfg = read_json(RESULT_PUSH_PATH, {}) or {}
         self.token_var = tk.StringVar(value=cfg.get("token", ""))
         self.repo_var = tk.StringVar(value=cfg.get("repo") or DEFAULT_RESULT_REPO)
-        self.folder_var = tk.StringVar(value=cfg.get("folder", DEFAULT_RESULT_FOLDER))
+        self.xlsx_var = tk.StringVar(value=cfg.get("xlsx") or DEFAULT_RESULT_XLSX)
         self.file_var = tk.StringVar(value=os.path.basename(path))
         self.symbol_var = tk.StringVar()
         self.hard_var = tk.StringVar()
@@ -3119,10 +3235,10 @@ class ResultsWindow(tk.Toplevel):
         r2.pack(fill="x", pady=2)
         ttk.Label(r2, text="ریپو (owner/name):").pack(side="left", padx=(6, 2))
         ttk.Entry(r2, textvariable=self.repo_var, width=28).pack(side="left", padx=(0, 10))
-        ttk.Label(r2, text="پوشه‌ی داخل ریپو:").pack(side="left", padx=(0, 2))
-        ttk.Entry(r2, textvariable=self.folder_var, width=14).pack(side="left", padx=(0, 10))
-        ttk.Label(r2, text="نام فایل:").pack(side="left", padx=(0, 2))
-        ttk.Entry(r2, textvariable=self.file_var, width=28).pack(side="left")
+        ttk.Label(r2, text="اکسل تجمعی در ریپو:").pack(side="left", padx=(0, 2))
+        ttk.Entry(r2, textvariable=self.xlsx_var, width=22).pack(side="left", padx=(0, 10))
+        ttk.Label(r2, text="نام CSV محلی:").pack(side="left", padx=(0, 2))
+        ttk.Entry(r2, textvariable=self.file_var, width=26).pack(side="left")
 
         mid = ttk.LabelFrame(self, text="مقدار یک‌جا برای همه‌ی ردیف‌ها")
         mid.pack(fill="x", padx=6, pady=(6, 0))
@@ -3156,7 +3272,7 @@ class ResultsWindow(tk.Toplevel):
         bar = ttk.Frame(self)
         bar.pack(fill="x", padx=6, pady=(0, 4))
         ttk.Button(bar, text="💾 ذخیره‌ی فایل", command=self._save_clicked).pack(side="left", padx=2)
-        self.push_btn = ttk.Button(bar, text="⬆ پوش به ریپو", command=self._push)
+        self.push_btn = ttk.Button(bar, text="⬆ افزودن به اکسل تجمعی در ریپو", command=self._push)
         self.push_btn.pack(side="left", padx=2)
         ttk.Button(bar, text="🗑 حذف ردیف انتخابی", command=self._delete_selected).pack(side="left", padx=(14, 2))
         ttk.Button(bar, text="بستن", command=self.destroy).pack(side="right", padx=2)
@@ -3272,7 +3388,7 @@ class ResultsWindow(tk.Toplevel):
         self._end_edit(True)
         token = self.token_var.get().strip()
         repo = self.repo_var.get().strip().strip("/")
-        folder = self.folder_var.get().strip().strip("/")
+        xlsx = self.xlsx_var.get().strip().strip("/")
         if not token:
             messagebox.showerror("خطا", "کلید دسترسی (توکن) را بالای جدول وارد کنید.", parent=self)
             return
@@ -3280,31 +3396,33 @@ class ResultsWindow(tk.Toplevel):
             messagebox.showerror("خطا", "کلید فقط شامل حروف انگلیسی/عدد/زیرخط است (فاصله یا متن فارسی نباید داشته باشد).", parent=self)
             return
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
-            messagebox.showerror("خطا", "ریپو باید به شکل owner/name باشد؛ مثلاً valipour121/sarkhat_result", parent=self)
+            messagebox.showerror("خطا", "ریپو باید به شکل owner/name باشد؛ مثلاً valipour121/sarkh-panel", parent=self)
+            return
+        if not xlsx or not xlsx.lower().endswith(".xlsx"):
+            messagebox.showerror("خطا", "مسیر فایل اکسل در ریپو باید با .xlsx تمام شود؛ مثلاً sarkhat_result.xlsx", parent=self)
             return
         if not self.rows:
             messagebox.showerror("خطا", "جدول خالی است.", parent=self)
             return
         try:
-            path = self._write_local()
-            with open(path, "rb") as f:
-                content = f.read()
+            self._write_local()      # CSV امروز همیشه محلی هم ذخیره می‌شود
         except OSError as e:
-            messagebox.showerror("خطا", f"ذخیره‌ی فایل ناموفق بود:\n{e}", parent=self)
+            messagebox.showerror("خطا", f"ذخیره‌ی فایل CSV ناموفق بود:\n{e}", parent=self)
             return
         try:
-            write_json_atomic(RESULT_PUSH_PATH, {"token": token, "repo": repo, "folder": folder})
+            write_json_atomic(RESULT_PUSH_PATH, {"token": token, "repo": repo, "xlsx": xlsx})
             os.chmod(RESULT_PUSH_PATH, 0o600)
         except OSError:
             pass
-        remote = (folder + "/" if folder else "") + os.path.basename(path)
-        message = f"نتایج {self.rows[0][0] if self.rows[0] else ''} — {len(self.rows)} ردیف — {RESULT_TECH_LABEL}"
+        header, rows = list(self.header), [list(r) for r in self.rows]
+        dates = sorted({r[0] for r in rows if r and r[0]})
+        message = f"نتایج {'، '.join(dates)} — {len(rows)} ردیف — {RESULT_TECH_LABEL}"
         self.push_btn.config(state="disabled")
-        self.status_var.set(f"در حال پوش به {repo}/{remote} ...")
+        self.status_var.set(f"در حال افزودن به {repo}/{xlsx} ...")
 
         def work():
-            ok, info = github_put_file(token, repo, remote, content, message)
-            self._q.put((ok, info, repo, remote))
+            ok, info, replaced = github_append_results(token, repo, xlsx, header, rows, message)
+            self._q.put((ok, info, repo, xlsx, replaced, len(rows)))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -3313,14 +3431,15 @@ class ResultsWindow(tk.Toplevel):
             return
         try:
             while True:
-                ok, info, repo, remote = self._q.get_nowait()
+                ok, info, repo, xlsx, replaced, n = self._q.get_nowait()
                 self.push_btn.config(state="normal")
                 if ok:
-                    self.status_var.set(f"✔ پوش شد: {info}")
-                    messagebox.showinfo("پوش شد", f"فایل در ریپو {repo} ذخیره شد:\n{info}", parent=self)
+                    extra = f" ({replaced} ردیف قدیمیِ همان تاریخ جایگزین شد)" if replaced else ""
+                    self.status_var.set(f"✔ {n} ردیف به {xlsx} اضافه شد{extra}: {info}")
+                    messagebox.showinfo("انجام شد", f"{n} ردیف به اکسل تجمعی در ریپو {repo} اضافه شد{extra}:\n{info}", parent=self)
                 else:
-                    self.status_var.set(f"✖ پوش ناموفق: {info}")
-                    messagebox.showerror("پوش ناموفق", info, parent=self)
+                    self.status_var.set(f"✖ ناموفق: {info}")
+                    messagebox.showerror("ناموفق", info, parent=self)
         except queue.Empty:
             pass
         self.after(150, self._poll)
