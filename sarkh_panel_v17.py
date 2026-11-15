@@ -2933,6 +2933,7 @@ LAST_RUN_PATH = os.path.join(STATE_DIR, "panel_last_run.json")
 DEFAULT_RESULT_REPO = "valipour121/sarkh-panel"       # همین ریپوی پنل
 DEFAULT_RESULT_XLSX = "sarkhat_result.xlsx"           # یک اکسلِ تجمعی؛ نتایج هر روز به آن اضافه می‌شود
 RESULT_SHEET = "نتایج"
+DEFAULT_RESULT_TOKEN = ""   # مقدار پیش‌فرض کلید؛ در ریپوی عمومی همیشه خالی بماند (فقط در نسخه‌ی شخصی *_local.py پر می‌شود)
 RESULT_NUMERIC_COLS = ("رتبه", "تعداد درخواست")       # در اکسل به‌صورت عدد ذخیره می‌شوند
 GITHUB_API = os.environ.get("SARKH_GITHUB_API", "https://api.github.com")   # فقط برای تست قابل تغییر است
 RESULT_COLUMNS = ["تاریخ", "نام کاربر", "رتبه", "نتیجه", "نام کارگزار", "نام نماد", "سختی نماد",
@@ -3210,7 +3211,7 @@ class ResultsWindow(tk.Toplevel):
         self.header = list(header) or list(RESULT_COLUMNS)
         self.rows = [list(r) + [""] * (len(self.header) - len(r)) for r in rows]
         cfg = read_json(RESULT_PUSH_PATH, {}) or {}
-        self.token_var = tk.StringVar(value=cfg.get("token", ""))
+        self.token_var = tk.StringVar(value=cfg.get("token") or DEFAULT_RESULT_TOKEN)
         self.repo_var = tk.StringVar(value=cfg.get("repo") or DEFAULT_RESULT_REPO)
         self.xlsx_var = tk.StringVar(value=cfg.get("xlsx") or DEFAULT_RESULT_XLSX)
         self.file_var = tk.StringVar(value=os.path.basename(path))
