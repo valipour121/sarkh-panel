@@ -36,8 +36,9 @@ sent it.
   overhead that slows the sending down. Full per-request detail for each
   account is still recorded and viewable via its own "مشاهده لاگ" window.
 
-Run:  python panel_edited_v2.py
+Run:  python sarkh_panel_v17.py
 Requires: requests  (pip install requests)
+          برای دکمه‌ی «🔑 ورود» (اختیاری): pip install websocket-client + گوگل کروم
 
 این نسخه کاملاً تک‌فایلی است — همه چیز (شامل تنظیمات هر کارگزاری) همین
 یک فایل است تا مشکل «فایل کنارش پیدا نشد» دیگر پیش نیاید.
@@ -59,8 +60,10 @@ import platform
 import queue
 import re
 import shlex
+import shutil
 import socket
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -73,7 +76,13 @@ from datetime import datetime
 
 import requests
 
+try:
+    import websocket  # pip install websocket-client (فقط برای دکمه‌ی «ورود»)
+except ImportError:
+    websocket = None
+
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts.json")
+PROFILES_DIR = os.path.join(os.path.dirname(CONFIG_PATH), "chrome_profiles")   # یک پروفایل کروم جدا برای هر حساب (کوکی/نشست؛ جای عمومی نگذار)
 
 # ============================================================================
 # Embedded logo (نورآی / nouray.ir) — base64 PNG, ~30KB, so the whole panel
@@ -1630,6 +1639,22 @@ GUIDE_TEXT = """راهنمای گرفتن هدر درخواست از مرورگ�
 """
 
 
+GUIDE_LOGIN_TEXT = """ورود خودکار و ثبت خودکار هدر سفارش — ورژن ۱۷
+=================================================
+۱. در «افزودن/ویرایش حساب»، یوزرنیم و پسورد ورود به کارگزاری و (ترجیحاً) آدرس صفحه‌ی ورود را بنویس.
+   فیلد «هدر» را می‌توانی خالی بگذاری.
+۲. روی خانه‌ی «🔑 ورود» همان حساب دابل‌کلیک کن. یک کروم با پروفایل مجزای همان حساب باز می‌شود و
+   یوزرنیم/پسورد خودکار در فرم گذاشته می‌شود (دکمه‌ی ورود و کپچا را خودت می‌زنی).
+۳. سفارش را بفرست. پنل اولین درخواست POST را که آدرسش شامل «کلیدواژه‌ی آدرس سفارش» (پیش‌فرض order)
+   باشد با همه‌ی هدرها، کوکی‌ها و توکن در فیلد «هدر» ذخیره می‌کند و کروم را بدون خروج از حساب می‌بندد.
+۴. وضعیت هر مرحله در همان خانه‌ی «ورود» نوشته می‌شود. برای حساب بعدی همین مراحل را تکرار کن.
+نیازمندی: pip install websocket-client و نصب بودن گوگل کروم (مسیر دلخواه: متغیر محیطی CHROME_PATH).
+حساب فعال‌شده خودکار به ردیف ۱ می‌رود و غیرفعال‌ها پایین می‌مانند. وقفه/پیش‌گرمیِ ذخیره‌شده‌ی هر حساب با
+جابه‌جایی ردیف عوض نمی‌شود؛ اگر پیش‌فرض ردیفی می‌خواهی دکمه‌ی «🔢 اعمال پیش‌فرض ردیفی» را بزن.
+پسورد ورود در accounts.json و کوکی‌ها در chrome_profiles/ می‌مانند؛ هیچ‌کدام را در گیت‌هاب نگذار.
+"""
+
+
 GUIDE_RESULTS_TEXT = """نتایج روزانه (CSV و اکسل تجمعی) — ورژن ۱۷
 ==========================================
 بعد از پایان ارسال‌ها، دکمه‌ی «📊 ساخت CSV نتایج» (بالای پنل) برای هر حساب یک ردیف می‌سازد
@@ -1695,6 +1720,10 @@ def load_accounts():
         for k in ("trigger", "count"):
             if k not in order:
                 order[k] = DEFAULT_ORDER[k]
+                changed = True
+        for k, dv in (("login_username", ""), ("login_password", ""), ("login_url", ""), ("order_keyword", "order")):
+            if k not in acc:
+                acc[k] = dv
                 changed = True
     if changed:
         save_accounts(accounts)
@@ -2008,6 +2037,305 @@ class FullLogWindow(tk.Toplevel):
         messagebox.showinfo("ذخیره شد", f"فایل لاگ کل پنل ذخیره شد:\n{path}", parent=self)
 
 
+# ============================================================================
+# v17: ورود خودکار با پروفایل جدا کروم + ثبت خودکار درخواست سفارش (CDP)
+# ============================================================================
+# روش کار: کروم با یک پروفایل مجزا برای هر حساب و با remote-debugging باز
+# می‌شود. پنل از طریق DevTools Protocol (بدون هیچ اسکریپتی داخل صفحه‌ی
+# کارگزاری) یوزرنیم/پسورد را در فرم ورود می‌گذارد، و وقتی شما سفارش را فرستادید
+# اولین درخواست POST که آدرسش شامل «کلیدواژه‌ی سفارش» باشد را با همه‌ی هدرها،
+# کوکی‌ها (شامل HttpOnly) و توکن می‌گیرد، به‌صورت دستور curl در فیلد «هدر» همان
+# حساب ذخیره می‌کند و کروم را (بدون خروج از حساب) می‌بندد.
+
+SKIP_CAPTURE_HEADERS = {"host", "content-length", "connection", "accept-encoding"}
+
+
+def find_chrome():
+    env = os.environ.get("CHROME_PATH")
+    if env and os.path.exists(env):
+        return env
+    candidates = []
+    if sys.platform.startswith("win"):
+        for var in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            base = os.environ.get(var)
+            if base:
+                candidates.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+    elif sys.platform == "darwin":
+        candidates.append("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    else:
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            p = shutil.which(name)
+            if p:
+                candidates.append(p)
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def _free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def build_curl(url, method, headers, body):
+    """Build a one-line curl command that parse_captured_curl() reads back."""
+    parts = ["curl", shlex.quote(url), "-X", method.upper()]
+    for k, v in headers.items():
+        parts += ["-H", shlex.quote(f"{k}: {v}")]
+    if body:
+        parts += ["--data-raw", shlex.quote(body)]
+    return " ".join(parts)
+
+
+_FILL_JS_TEMPLATE = r"""(function(){
+  var U=%s, P=%s, H=%s;
+  if (H && location.hostname.toLowerCase().indexOf(H) === -1) return;
+  function visible(el){var r=el.getBoundingClientRect();return r.width>0&&r.height>0;}
+  function setVal(el,v){
+    var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');
+    d.set.call(el,v);
+    el.dispatchEvent(new Event('input',{bubbles:true}));
+    el.dispatchEvent(new Event('change',{bubbles:true}));
+  }
+  function tryFill(){
+    var pw=[].slice.call(document.querySelectorAll('input[type=password]')).filter(visible)[0];
+    if(!pw) return false;
+    var inputs=[].slice.call(document.querySelectorAll('input')).filter(function(i){
+      return visible(i)&&['text','tel','email','number',''].indexOf((i.type||'').toLowerCase())>=0;
+    });
+    var user=null;
+    for(var i=0;i<inputs.length;i++){
+      if(inputs[i].compareDocumentPosition(pw)&Node.DOCUMENT_POSITION_FOLLOWING){user=inputs[i];}
+    }
+    if(user&&!user.value&&U) setVal(user,U);
+    if(!pw.value&&P) setVal(pw,P);
+    return true;
+  }
+  var tries=0;
+  var t=setInterval(function(){tries++; if(tryFill()||tries>200) clearInterval(t);},300);
+})();"""
+
+
+def build_fill_js(username, password, login_url):
+    if not username and not password:
+        return ""
+    host = ""
+    m = re.match(r"^https?://([^/:?#]+)", (login_url or "").strip(), flags=re.IGNORECASE)
+    if m:
+        host = ".".join(m.group(1).lower().split(".")[-2:])
+    return _FILL_JS_TEMPLATE % (json.dumps(username or ""), json.dumps(password or ""), json.dumps(host))
+
+
+class ConnectionClosed(Exception):
+    pass
+
+
+class CDPConnection:
+    """Minimal Chrome DevTools Protocol client over the browser websocket."""
+
+    def __init__(self, ws_url):
+        self.ws = websocket.create_connection(ws_url, timeout=5, suppress_origin=True)
+        self.ws.settimeout(0.5)
+        self._id = 0
+        self._lock = threading.Lock()
+
+    def send(self, method, params=None, session_id=None):
+        with self._lock:
+            self._id += 1
+            msg = {"id": self._id, "method": method, "params": params or {}}
+            if session_id:
+                msg["sessionId"] = session_id
+            self.ws.send(json.dumps(msg))
+            return self._id
+
+    def recv(self):
+        try:
+            raw = self.ws.recv()
+        except (websocket.WebSocketTimeoutException, socket.timeout):
+            return None
+        except (websocket.WebSocketConnectionClosedException, OSError) as e:
+            raise ConnectionClosed(str(e))
+        if not raw:
+            raise ConnectionClosed("closed")
+        return json.loads(raw)
+
+    def close(self):
+        try:
+            self.ws.close()
+        except Exception:
+            pass
+
+
+class LoginSession(threading.Thread):
+    """One Chrome profile for one account: auto-fill login, capture the order."""
+
+    def __init__(self, account, chrome_path, ui_queue):
+        super().__init__(daemon=True)
+        self.account = account
+        self.chrome_path = chrome_path
+        self.ui_queue = ui_queue
+        self.cancel = threading.Event()
+        self.proc = None
+        self.conn = None
+
+    def _status(self, text):
+        self.ui_queue.put(("status", self.account["id"], text))
+
+    def run(self):
+        try:
+            self._run()
+        except ConnectionClosed:
+            self._status("⚠ پروفایل بسته شد، سفارشی ثبت نشد")
+        except Exception as e:
+            self._status(f"❌ {e}")
+        finally:
+            self._shutdown_chrome()
+            self.ui_queue.put(("ended", self.account["id"]))
+
+    def _wait_for_devtools(self, port):
+        s = requests.Session()
+        s.trust_env = False
+        t0 = time.time()
+        while time.time() - t0 < 25:
+            if self.cancel.is_set():
+                raise RuntimeError("لغو شد")
+            if self.proc.poll() is not None:
+                raise RuntimeError("کروم بلافاصله بسته شد — احتمالاً همین پروفایل از قبل باز است")
+            try:
+                r = s.get(f"http://127.0.0.1:{port}/json/version", timeout=1)
+                return r.json()["webSocketDebuggerUrl"]
+            except Exception:
+                time.sleep(0.2)
+        raise RuntimeError("اتصال به کروم برقرار نشد")
+
+    def _setup_page(self, sid, fill_js):
+        self.conn.send("Network.enable", {}, sid)
+        self.conn.send("Page.enable", {}, sid)
+        if fill_js:
+            self.conn.send("Page.addScriptToEvaluateOnNewDocument", {"source": fill_js}, sid)
+            self.conn.send("Runtime.evaluate", {"expression": fill_js}, sid)
+
+    def _run(self):
+        acc = self.account
+        profile_dir = os.path.join(PROFILES_DIR, acc["id"])
+        os.makedirs(profile_dir, exist_ok=True)
+        port = _free_port()
+        login_url = (acc.get("login_url") or "").strip()
+        args = [
+            self.chrome_path,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={profile_dir}",
+            "--no-first-run", "--no-default-browser-check", "--new-window",
+            login_url or "about:blank",
+        ]
+        self.proc = subprocess.Popen(args)
+        self.conn = CDPConnection(self._wait_for_devtools(port))
+
+        fill_js = build_fill_js(acc.get("login_username"), acc.get("login_password"), login_url)
+        keyword = (acc.get("order_keyword") or "order").strip().lower()
+
+        self.conn.send("Target.setDiscoverTargets", {"discover": True})
+        self._status("🌐 باز شد — وارد شوید و سفارش را بفرستید")
+
+        attached_targets = set()
+        attach_cmds = {}   # command id -> targetId
+        post_cmds = {}     # command id -> request key
+        reqs = {}          # (sessionId, requestId) -> captured candidate
+        extras = {}        # (sessionId, requestId) -> full headers incl. cookies
+
+        while not self.cancel.is_set():
+            msg = self.conn.recv()
+            if msg is not None:
+                if "id" in msg:
+                    cid = msg["id"]
+                    if cid in attach_cmds:
+                        attach_cmds.pop(cid)
+                        sid = (msg.get("result") or {}).get("sessionId")
+                        if sid:
+                            self._setup_page(sid, fill_js)
+                    elif cid in post_cmds:
+                        key = post_cmds.pop(cid)
+                        if key in reqs:
+                            reqs[key]["postData"] = (msg.get("result") or {}).get("postData", "")
+                            reqs[key]["post_done"] = True
+                else:
+                    method = msg.get("method")
+                    params = msg.get("params") or {}
+                    sid = msg.get("sessionId")
+                    if method == "Target.targetCreated":
+                        info = params.get("targetInfo") or {}
+                        tid = info.get("targetId")
+                        if info.get("type") == "page" and tid and tid not in attached_targets:
+                            attached_targets.add(tid)
+                            cid = self.conn.send("Target.attachToTarget", {"targetId": tid, "flatten": True})
+                            attach_cmds[cid] = tid
+                    elif method == "Network.requestWillBeSent" and sid:
+                        req = params.get("request") or {}
+                        if (req.get("method") or "").upper() == "POST" and keyword in (req.get("url") or "").lower():
+                            key = (sid, params.get("requestId"))
+                            post = req.get("postData")
+                            entry = {
+                                "url": req["url"], "method": "POST",
+                                "headers": req.get("headers") or {},
+                                "postData": post, "seen": time.time(),
+                                "post_done": bool(post) or not req.get("hasPostData"),
+                            }
+                            reqs[key] = entry
+                            if not entry["post_done"]:
+                                cid = self.conn.send("Network.getRequestPostData",
+                                                     {"requestId": params.get("requestId")}, sid)
+                                post_cmds[cid] = key
+                    elif method == "Network.requestWillBeSentExtraInfo" and sid:
+                        extras[(sid, params.get("requestId"))] = params.get("headers") or {}
+                        if len(extras) > 3000:
+                            for k in list(extras)[:1500]:
+                                extras.pop(k, None)
+
+            for key, entry in list(reqs.items()):
+                if entry["post_done"] and (key in extras or time.time() - entry["seen"] > 1.5):
+                    self._capture(entry, extras.get(key, {}))
+                    return
+
+        self._status("⏹ لغو شد")
+
+    def _capture(self, entry, extra):
+        merged = {}
+        for src in (entry["headers"], extra):
+            for k, v in src.items():
+                if k.startswith(":"):
+                    continue
+                merged[k.lower()] = (k, v)
+        headers = {orig: val for low, (orig, val) in merged.items() if low not in SKIP_CAPTURE_HEADERS}
+        curl = build_curl(entry["url"], entry["method"], headers, entry.get("postData") or "")
+        self.ui_queue.put(("captured", self.account["id"], curl))
+        if "cookie" in merged or "authorization" in merged:
+            self._status("✔ سفارش ثبت شد (پروفایل بسته شد)")
+        else:
+            self._status("⚠ ثبت شد ولی کوکی/توکنی در درخواست نبود")
+
+    def _shutdown_chrome(self):
+        try:
+            if self.conn:
+                self.conn.send("Browser.close")
+        except Exception:
+            pass
+        if self.proc is not None:
+            try:
+                self.proc.wait(timeout=6)
+            except Exception:
+                try:
+                    self.proc.terminate()
+                except Exception:
+                    pass
+        if self.conn:
+            self.conn.close()
+
+
+
 class AccountDialog(tk.Toplevel):
     """Add/Edit dialog for a single account."""
 
@@ -2022,6 +2350,10 @@ class AccountDialog(tk.Toplevel):
             "broker": next(iter(BROKERS)),
             "enabled": True,
             "header": "",
+            "login_username": "",
+            "login_password": "",
+            "login_url": "",
+            "order_keyword": "order",
             "order": new_account_order(row),
         }
 
@@ -2052,13 +2384,31 @@ class AccountDialog(tk.Toplevel):
         ttk.Checkbutton(self, text="فعال", variable=self.enabled_var).grid(row=row, column=2, sticky="w")
         row += 1
 
+        login_frame = ttk.LabelFrame(self, text="اطلاعات ورود به کارگزاری (برای دکمه‌ی «🔑 ورود» در پنل)")
+        login_frame.grid(row=row, column=0, columnspan=3, sticky="we", padx=6, pady=4)
+        self.login_user_var = tk.StringVar(value=self.account.get("login_username", ""))
+        self.login_pass_var = tk.StringVar(value=self.account.get("login_password", ""))
+        self.login_url_var = tk.StringVar(value=self.account.get("login_url", ""))
+        self.order_kw_var = tk.StringVar(value=self.account.get("order_keyword", "order") or "order")
+        ttk.Label(login_frame, text="یوزرنیم ورود:").grid(row=0, column=0, sticky="e", padx=4, pady=2)
+        ttk.Entry(login_frame, textvariable=self.login_user_var, width=26).grid(row=0, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(login_frame, text="پسورد ورود:").grid(row=0, column=2, sticky="e", padx=4, pady=2)
+        ttk.Entry(login_frame, textvariable=self.login_pass_var, width=24, show="•").grid(row=0, column=3, sticky="w", padx=4, pady=2)
+        ttk.Label(login_frame, text="آدرس صفحه‌ی ورود:").grid(row=1, column=0, sticky="e", padx=4, pady=2)
+        ttk.Entry(login_frame, textvariable=self.login_url_var, width=70).grid(row=1, column=1, columnspan=3, sticky="we", padx=4, pady=2)
+        ttk.Label(login_frame, text="کلیدواژه‌ی آدرس سفارش:").grid(row=2, column=0, sticky="e", padx=4, pady=2)
+        ttk.Entry(login_frame, textvariable=self.order_kw_var, width=20).grid(row=2, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(login_frame, text="اولین POST که آدرسش این کلمه را داشته باشد به‌عنوان سفارش ثبت می‌شود",
+                  foreground="#666").grid(row=2, column=2, columnspan=2, sticky="w", padx=4, pady=2)
+        row += 1
+
         ttk.Label(self, text="هدر (متن خام curl کپی‌شده از مرورگر، یا کد پایتونِ تبدیل‌شده):").grid(
             row=row, column=0, columnspan=3, sticky="w", padx=6, pady=(8, 0))
         row += 1
 
         header_frame = ttk.Frame(self)
         header_frame.grid(row=row, column=0, columnspan=3, sticky="we", padx=6, pady=(0, 4))
-        self.header_text = tk.Text(header_frame, width=90, height=14, wrap="none", font=("Consolas", 10))
+        self.header_text = tk.Text(header_frame, width=90, height=7, wrap="none", font=("Consolas", 10))
         self.header_text.pack(side="left", fill="both", expand=True)
         header_scroll = ttk.Scrollbar(header_frame, command=self.header_text.yview)
         header_scroll.pack(side="right", fill="y")
@@ -2156,14 +2506,18 @@ class AccountDialog(tk.Toplevel):
             return
 
         header_text = self.header_text.get("1.0", "end").strip()
-        if not header_text or header_text == HEADER_PLACEHOLDER_HINT.strip():
-            messagebox.showerror("خطا", "هدر (متن curl یا کد پایتونِ تبدیل‌شده) را وارد کنید.")
+        if header_text == HEADER_PLACEHOLDER_HINT.strip():
+            header_text = ""
+        login_username = self.login_user_var.get().strip()
+        if not header_text and not login_username:
+            messagebox.showerror("خطا", "یا هدر (curl) را وارد کنید، یا یوزرنیم ورود را بگذارید تا هدر با دکمه‌ی «🔑 ورود» ثبت شود.")
             return
 
         # Validate parse-ability now, so mistakes are caught at save time
         # rather than only when Start is pressed.
         try:
-            BROKERS[broker_key]["parse"](header_text)
+            if header_text:
+                BROKERS[broker_key]["parse"](header_text)
         except CapturedRequestError as e:
             if not messagebox.askyesno(
                 "هشدار",
@@ -2205,6 +2559,10 @@ class AccountDialog(tk.Toplevel):
             "broker": broker_key,
             "enabled": self.enabled_var.get(),
             "header": header_text,
+            "login_username": login_username,
+            "login_password": self.login_pass_var.get(),
+            "login_url": self.login_url_var.get().strip(),
+            "order_keyword": self.order_kw_var.get().strip() or "order",
             "order": order,
         }
         self.destroy()
@@ -3450,7 +3808,8 @@ class PanelApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("پنل چند حسابی ارسال سفارش — نورآی")
-        self.geometry("900x560")
+        self.geometry("1000x820")
+        self.minsize(900, 700)
 
         # لوگوی جاسازی‌شده (base64) — یک نسخه‌ی کامل برای آیکن پنجره، و یک
         # نسخه‌ی کوچک‌شده (subsample) برای نوار عنوان بالای پنل.
@@ -3474,7 +3833,15 @@ class PanelApp(tk.Tk):
             if migrated_debug:
                 save_accounts(self.accounts)
             self._migrations["v15_debug_volume"] = True
+        if self._normalize_order():     # فعال‌ها بالا، غیرفعال‌ها پایین
+            save_accounts(self.accounts)
         self.log_queue = queue.Queue()
+        self.ui_queue = queue.Queue()   # پیام‌های ورود خودکار (وضعیت / هدر ثبت‌شده)
+        self.login_sessions = {}        # account id -> LoginSession
+        self.login_status = {}          # account id -> متن ستون «ورود»
+        self.phase = "idle"             # idle / waiting / sending / test / done / stopped (برای شمارش معکوس)
+        self.phase_start_ts = None
+        self.phase_end_ts = None
         self.stop_event = threading.Event()
         self.workers = []
         self.logs_by_account = {acc["id"]: [] for acc in self.accounts}
@@ -3512,6 +3879,7 @@ class PanelApp(tk.Tk):
         self._save_settings_now()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._drain_job = self.after(150, self._drain_log)
+        self._tick_job = self.after(100, self._tick)
 
     def _build_ui(self):
         header = ttk.Frame(self)
@@ -3522,6 +3890,14 @@ class PanelApp(tk.Tk):
         brand.pack(side="left", padx=(0, 10), anchor="n")
         ttk.Label(brand, image=self.logo_thumb).pack(side="left", padx=(0, 6))
         ttk.Label(brand, text="نورآی", font=("Tahoma", 14, "bold")).pack(side="left")
+
+        # سمت راست: شمارنده‌ی معکوس (با دقت ثانیه)
+        cd_box = ttk.Frame(header)
+        cd_box.pack(side="right", padx=(10, 0), anchor="n")
+        self.countdown_caption = ttk.Label(cd_box, text="آماده", foreground="#666")
+        self.countdown_caption.pack(anchor="e")
+        self.countdown_label = ttk.Label(cd_box, text="--:--:--", font=("Consolas", 30, "bold"))
+        self.countdown_label.pack(anchor="e")
 
         # سمت راستِ لوگو: تنظیمات
         settings = ttk.Frame(header)
@@ -3568,16 +3944,21 @@ class PanelApp(tk.Tk):
         ttk.Button(toolbar, text="📋 لاگ کل پنل", command=self._open_full_log).pack(side="left", padx=2)
         ttk.Button(toolbar, text="🔢 اعمال پیش‌فرض ردیفی", command=self._apply_row_defaults).pack(side="left", padx=2)
 
-        columns = ("row", "name", "enabled", "broker", "interval", "trigger", "count", "log")
-        headers = ["ردیف", "نام کاربری", "فعال", "کارگزاری", "وقفه (ms)", "تریگر", "تعداد", "لاگ"]
-        col_widths = {"row": 50, "name": 130, "enabled": 60, "broker": 110, "interval": 80,
+        columns = ("row", "name", "login", "enabled", "broker", "interval", "trigger", "count", "log")
+        headers = ["ردیف", "نام کاربری", "ورود", "فعال", "کارگزاری", "وقفه (ms)", "تریگر", "تعداد", "لاگ"]
+        col_widths = {"row": 50, "name": 150, "login": 190, "enabled": 60, "broker": 110, "interval": 80,
                       "trigger": 80, "count": 60, "log": 110}
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=8)
+        tree_frame = ttk.Frame(self)
+        tree_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=20)
         for c, h in zip(columns, headers):
             self.tree.heading(c, text=h)
             self.tree.column(c, width=col_widths[c], anchor="center")
         self._cell_edit = None
-        self.tree.pack(fill="x", padx=6, pady=(0, 6))
+        self.tree.pack(side="left", fill="both", expand=True)
+        tree_scroll = ttk.Scrollbar(tree_frame, command=self.tree.yview)
+        tree_scroll.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=tree_scroll.set)
         self.tree.bind("<Double-1>", self._on_tree_double_click)
         self.tree.bind("<ButtonPress-1>", self._on_tree_press)
         self.tree.bind("<B1-Motion>", self._on_tree_motion)
@@ -3588,34 +3969,21 @@ class PanelApp(tk.Tk):
 
         ttk.Label(
             self,
-            text="نکته: روی «فعال» کلیک کنید تا فعال/غیرفعال شود؛ روی «وقفه/تریگر/تعداد» کلیک کنید تا "
-                 "مقدارش را تغییر دهید (Enter = ثبت). برای تغییر ترتیب، ردیف را بکشید.",
-            foreground="#666", wraplength=860, justify="left",
-        ).pack(fill="x", padx=6, pady=(0, 4))
-
-        live_bar = ttk.Frame(self)
-        live_bar.pack(fill="x", padx=6)
-        self.live_var = tk.BooleanVar(value=False)   # پیش‌فرض خاموش
-        ttk.Checkbutton(live_bar, text="نمایش گزارش زنده (پیش‌فرض خاموش)",
-                        variable=self.live_var, command=self._toggle_live).pack(side="left")
-        self.log_frame = ttk.LabelFrame(self, text="گزارش زنده")
-        self.log_text = tk.Text(self.log_frame, state="disabled", wrap="none")
-        self.log_text.pack(fill="both", expand=True, side="left")
-        scroll = ttk.Scrollbar(self.log_frame, command=self.log_text.yview)
-        scroll.pack(side="right", fill="y")
-        self.log_text.configure(yscrollcommand=scroll.set)
-        self.live_hint = ttk.Label(
-            self, foreground="#666",
-            text="گزارش زنده خاموش است؛ خطوطش پشت‌صحنه نگه داشته می‌شود. جزئیات هر درخواست در «📄 مشاهده لاگ» هر حساب است.")
-        self.live_hint.pack(fill="x", padx=6, pady=6)
+            text="نکته: روی «🔑 ورود» دابل‌کلیک کنید تا پروفایل کروم همان حساب باز شود و هدر سفارش خودکار ثبت شود. "
+                 "روی «فعال» کلیک کنید تا فعال/غیرفعال شود (حساب فعال می‌رود ردیف ۱، غیرفعال‌ها پایین می‌مانند)؛ "
+                 "روی «وقفه/تریگر/تعداد» کلیک کنید تا مقدارش را تغییر دهید (Enter = ثبت).",
+            foreground="#666", wraplength=960, justify="left",
+        ).pack(fill="x", padx=6, pady=(0, 4), before=tree_frame)
 
     def _refresh_table(self):
+        sel = self.tree.selection()
         self.tree.delete(*self.tree.get_children())
         for idx, acc in enumerate(self.accounts):
             order = acc.get("order", {})
             self.tree.insert("", "end", iid=str(idx), values=(
                 idx + 1,
                 acc.get("name", ""),
+                self.login_status.get(acc.get("id"), "🔑 ورود"),
                 "✔" if acc.get("enabled") else "—",
                 BROKERS.get(acc.get("broker"), {}).get("label", acc.get("broker")),
                 fmt_num(order.get("interval_ms", "")),
@@ -3623,6 +3991,8 @@ class PanelApp(tk.Tk):
                 order.get("count", DEFAULT_ORDER["count"]),
                 "📄 مشاهده لاگ",
             ))
+        if sel and self.tree.exists(sel[0]):
+            self.tree.selection_set(sel[0])
 
     def _on_tree_double_click(self, event):
         region = self.tree.identify("region", event.x, event.y)
@@ -3635,6 +4005,8 @@ class PanelApp(tk.Tk):
         idx = int(row)
         if 0 <= col_index < len(columns) and columns[col_index] == "log":
             self._open_log_window(idx)
+        elif 0 <= col_index < len(columns) and columns[col_index] == "login":
+            self._open_login(idx)
         elif 0 <= col_index < len(columns) and columns[col_index] in ("row", "enabled", "interval", "trigger", "count"):
             pass  # تغییر وضعیت فعال/غیرفعال با یک کلیک ساده انجام می‌شود، نه دابل‌کلیک
         else:
@@ -3676,6 +4048,7 @@ class PanelApp(tk.Tk):
             except (ValueError, IndexError):
                 return
             self.accounts = new_order
+            self._normalize_order()   # فعال‌ها همیشه بالا می‌مانند
             save_accounts(self.accounts)
             self._refresh_table()
             return
@@ -3772,15 +4145,33 @@ class PanelApp(tk.Tk):
         except tk.TclError:
             pass
 
+    def _normalize_order(self):
+        """فعال‌ها اول، غیرفعال‌ها آخر (پایدار). اگر ترتیب عوض شد True برمی‌گرداند."""
+        new = [a for a in self.accounts if a.get("enabled")] + [a for a in self.accounts if not a.get("enabled")]
+        changed = any(a is not b for a, b in zip(new, self.accounts))
+        self.accounts = new
+        return changed
+
+    def _apply_enabled_change(self, acc, enabled):
+        """حساب تازه‌فعال ← ردیف ۱؛ حساب تازه‌غیرفعال ← اولین ردیف بعد از فعال‌ها."""
+        self.accounts = [a for a in self.accounts if a is not acc]
+        acc["enabled"] = enabled
+        if enabled:
+            self.accounts.insert(0, acc)
+        else:
+            n_enabled = sum(1 for a in self.accounts if a.get("enabled"))
+            self.accounts.insert(n_enabled, acc)
+
     def _toggle_enabled(self, idx):
         if not (0 <= idx < len(self.accounts)):
             return
-        self.accounts[idx]["enabled"] = not self.accounts[idx].get("enabled", True)
+        acc = self.accounts[idx]
+        self._apply_enabled_change(acc, not acc.get("enabled", True))
         save_accounts(self.accounts)
         self._refresh_table()
         try:
-            self.tree.selection_set(str(idx))
-        except tk.TclError:
+            self.tree.selection_set(str(self.accounts.index(acc)))
+        except (tk.TclError, ValueError):
             pass
 
     def _row_of(self, acc):
@@ -3830,8 +4221,7 @@ class PanelApp(tk.Tk):
         add(f"زمان تهیه: {datetime.now():%Y-%m-%d %H:%M:%S} | شمسی: {today_jalali_str()}")
         add(f"Python {platform.python_version()} | {platform.platform()} | requests {requests.__version__} | Tk {tk.TkVersion}")
         add(f"حساب‌ها: {len(self.accounts)} (فعال: {n_enabled}) | ساعت پایه: {self.base_time_var.get()} | "
-            f"تست: {self.test_count_var.get()} درخواست با فاصله {self.test_interval_var.get()}ms | "
-            f"گزارش زنده: {'روشن' if self.live_var.get() else 'خاموش'}")
+            f"تست: {self.test_count_var.get()} درخواست با فاصله {self.test_interval_var.get()}ms")
 
         all_rows = []
         http_counter, result_counter = collections.Counter(), collections.Counter()
@@ -3924,16 +4314,17 @@ class PanelApp(tk.Tk):
         scroll = ttk.Scrollbar(frame, command=text.yview)
         scroll.pack(side="right", fill="y")
         text.configure(yscrollcommand=scroll.set)
-        text.insert("1.0", GUIDE_RESULTS_TEXT + "\n\n" + GUIDE_TRIGGER_TEXT + "\n\n" + GUIDE_TEXT)
+        text.insert("1.0", GUIDE_LOGIN_TEXT + "\n\n" + GUIDE_RESULTS_TEXT + "\n\n" + GUIDE_TRIGGER_TEXT + "\n\n" + GUIDE_TEXT)
         text.configure(state="disabled")  # read-only but still selectable/copyable
 
         ttk.Button(win, text="بستن", command=win.destroy).pack(pady=(0, 8))
 
     def _add_account(self):
-        dlg = AccountDialog(self, row=len(self.accounts) + 1)
+        dlg = AccountDialog(self, row=1)   # حساب فعال تازه می‌رود ردیف ۱
         self.wait_window(dlg)
         if dlg.result:
             self.accounts.append(dlg.result)
+            self._apply_enabled_change(dlg.result, dlg.result.get("enabled", True))
             save_accounts(self.accounts)
             self._refresh_table()
 
@@ -3942,10 +4333,13 @@ class PanelApp(tk.Tk):
         if idx is None:
             messagebox.showinfo("راهنما", "یک حساب را از جدول انتخاب کنید.")
             return
+        was_enabled = self.accounts[idx].get("enabled", True)
         dlg = AccountDialog(self, account=self.accounts[idx], row=idx + 1)
         self.wait_window(dlg)
         if dlg.result:
             self.accounts[idx] = dlg.result
+            if dlg.result.get("enabled", True) != was_enabled:
+                self._apply_enabled_change(dlg.result, dlg.result.get("enabled", True))
             save_accounts(self.accounts)
             self._refresh_table()
 
@@ -3958,10 +4352,95 @@ class PanelApp(tk.Tk):
             del self.accounts[idx]
             save_accounts(self.accounts)
             self.logs_by_account.pop(acc_id, None)
+            self.login_status.pop(acc_id, None)
+            sess = self.login_sessions.get(acc_id)
+            if sess is not None:
+                sess.cancel.set()
             win = self.open_log_windows.pop(acc_id, None)
             if win is not None and win.winfo_exists():
                 win.destroy()
             self._refresh_table()
+
+    # ---------------- ورود خودکار (کروم) ----------------
+    def _open_login(self, idx):
+        if not (0 <= idx < len(self.accounts)):
+            return
+        acc = self.accounts[idx]
+        acc_id = acc["id"]
+        sess = self.login_sessions.get(acc_id)
+        if sess is not None and sess.is_alive():
+            messagebox.showinfo("راهنما", "پروفایل کروم این حساب هم‌اکنون باز است.")
+            return
+        if websocket is None:
+            messagebox.showerror("خطا", "کتابخانه‌ی websocket-client نصب نیست.\nدر ترمینال بزنید:\n\npip install websocket-client")
+            return
+        chrome = find_chrome()
+        if not chrome:
+            messagebox.showerror("خطا", "گوگل کروم پیدا نشد.\nمسیر chrome.exe را در متغیر محیطی CHROME_PATH قرار دهید.")
+            return
+        sess = LoginSession(dict(acc), chrome, self.ui_queue)
+        self.login_sessions[acc_id] = sess
+        self.login_status[acc_id] = "⏳ در حال باز شدن…"
+        self._refresh_table()
+        sess.start()
+
+    @staticmethod
+    def _fmt_hms(seconds):
+        s = max(0, int(math.ceil(seconds)))
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{sec:02d}"
+
+    def _update_countdown(self):
+        now = time.time()
+        if self.phase == "waiting" and now >= self.phase_start_ts:
+            self.phase = "sending"
+        if self.phase == "waiting":
+            caption, text = "مانده تا شروع ارسال", self._fmt_hms(self.phase_start_ts - now)
+        elif self.phase == "sending":
+            left = self.phase_end_ts - now
+            if left > 0:
+                caption, text = "در حال ارسال — مانده تا پایان آخرین ارسال", self._fmt_hms(left)
+            else:
+                caption, text = "ارسال تمام شد — در انتظار پاسخ‌ها", "00:00:00"
+        elif self.phase == "test":
+            caption, text = "تست در حال اجراست", "TEST"
+        elif self.phase == "done":
+            caption, text = "پایان", "00:00:00"
+        elif self.phase == "stopped":
+            caption, text = "متوقف شد", "--:--:--"
+        else:
+            caption, text = "آماده", "--:--:--"
+        self.countdown_caption.config(text=caption)
+        self.countdown_label.config(text=text)
+
+    def _tick(self):
+        """هر ۱۰۰ms: پیام‌های ورود خودکار + شمارنده‌ی معکوس."""
+        changed = False
+        try:
+            while True:
+                item = self.ui_queue.get_nowait()
+                kind, acc_id = item[0], item[1]
+                if kind == "status":
+                    self.login_status[acc_id] = item[2]
+                    changed = True
+                elif kind == "captured":
+                    for acc in self.accounts:
+                        if acc.get("id") == acc_id:
+                            acc["header"] = item[2]
+                            break
+                    save_accounts(self.accounts)
+                elif kind == "ended":
+                    self.login_sessions.pop(acc_id, None)
+        except queue.Empty:
+            pass
+        if changed:
+            self._refresh_table()
+        try:
+            self._update_countdown()
+        except tk.TclError:
+            return
+        self._tick_job = self.after(100, self._tick)
 
     def _start_all(self):
         if self.workers and any(w.is_alive() for w in self.workers):
@@ -4049,6 +4528,9 @@ class PanelApp(tk.Tk):
             w.start()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
+        self.phase = "waiting"
+        self.phase_start_ts = min(p["start_ts"] for _a, p in plans)
+        self.phase_end_ts = max(p["last_ts"] for _a, p in plans)
 
     def _start_test(self):
         if self.workers and any(w.is_alive() for w in self.workers):
@@ -4091,6 +4573,7 @@ class PanelApp(tk.Tk):
             w.start()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
+        self.phase = "test"
         self._remember_run("test", {a["id"]: {"trigger_ts": None, "count": count, "interval_ms": interval_ms}
                                     for a in enabled}, "")
         self._append_log(
@@ -4147,6 +4630,7 @@ class PanelApp(tk.Tk):
         self._append_log("--- درخواست توقف ارسال شد ---")
         self.stop_btn.config(state="disabled")
         self.start_btn.config(state="normal")
+        self.phase = "stopped"
 
     def _drain_log(self):
         self._flush_queue()
@@ -4155,35 +4639,15 @@ class PanelApp(tk.Tk):
             self.stop_btn.config(state="disabled")
             self.workers = []
             gc.enable()
+            if self.phase in ("waiting", "sending", "test"):
+                self.phase = "done"
             self._save_last_state()   # آخرین لاگ‌ها بعد از پایان اجرا ذخیره می‌شود
         self._drain_job = self.after(150, self._drain_log)
 
     def _append_log(self, msg):
-        self.live_lines.append(msg)          # همیشه نگه داشته می‌شود (برای ذخیره و روشن‌کردن بعدی)
-        if self.live_var.get():
-            self._insert_live(msg)
-
-    def _insert_live(self, msg):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", msg + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
-
-    def _toggle_live(self, save=True):
-        if self.live_var.get():
-            self.live_hint.pack_forget()
-            self.log_frame.pack(fill="both", expand=True, padx=6, pady=6)
-            self.log_text.configure(state="normal")
-            self.log_text.delete("1.0", "end")
-            if self.live_lines:
-                self.log_text.insert("end", "\n".join(self.live_lines) + "\n")
-            self.log_text.see("end")
-            self.log_text.configure(state="disabled")
-        else:
-            self.log_frame.pack_forget()
-            self.live_hint.pack(fill="x", padx=6, pady=6)
-        if save:
-            self._queue_settings_save()
+        # نمایش گزارش زنده حذف شده؛ خطوط فقط پشت‌صحنه نگه داشته می‌شوند
+        # (برای «📋 لاگ کل پنل»، ذخیره‌ی حالت و آخرین وضعیت).
+        self.live_lines.append(msg)
 
     # ---------------- ذخیره/بازیابی وضعیت پنل ----------------
     def _settings_dict(self):
@@ -4195,7 +4659,6 @@ class PanelApp(tk.Tk):
             "base_time": self.base_time_var.get(),
             "test_count": self.test_count_var.get(),
             "test_interval": self.test_interval_var.get(),
-            "live_log": bool(self.live_var.get()),
             "geometry": geo,
             "migrations": dict(getattr(self, "_migrations", {})),
         }
@@ -4209,14 +4672,11 @@ class PanelApp(tk.Tk):
             self.test_count_var.set(str(st["test_count"]))
         if st.get("test_interval"):
             self.test_interval_var.set(str(st["test_interval"]))
-        if apply_live and "live_log" in st:
-            self.live_var.set(bool(st["live_log"]))
-        self._toggle_live(save=False)
         geo = st.get("geometry") if with_geometry else None
         if isinstance(geo, str):
             m = re.fullmatch(r"(\d+)x(\d+)(?:\+(-?\d+)\+(-?\d+))?", geo)
             if m:
-                w, h = max(700, int(m.group(1))), max(450, int(m.group(2)))
+                w, h = max(900, int(m.group(1))), max(760, int(m.group(2)))
                 sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
                 w, h = min(w, sw), min(h, sh)
                 if m.group(3) is not None and -50 <= int(m.group(3)) <= sw - 100 and -50 <= int(m.group(4)) <= sh - 100:
@@ -4280,7 +4740,12 @@ class PanelApp(tk.Tk):
         self._flush_queue()
         gc.enable()
         self._save_last_state()
-        for job in (getattr(self, "_drain_job", None), self._settings_job):
+        sessions = list(self.login_sessions.values())
+        for s in sessions:
+            s.cancel.set()
+        for s in sessions:
+            s.join(timeout=4)
+        for job in (getattr(self, "_drain_job", None), getattr(self, "_tick_job", None), self._settings_job):
             if job is not None:
                 try:
                     self.after_cancel(job)
@@ -4388,7 +4853,6 @@ class PanelApp(tk.Tk):
         self.live_lines.clear()
         for line in (data.get("live_log") or [])[-LIVE_LINES_MAX:]:
             self.live_lines.append(str(line))
-        self._toggle_live(save=False)
         self._refresh_table()
         self._append_log(f"--- حالت «{name}» ({jdate}) بارگذاری شد ---")
         self._save_last_state()

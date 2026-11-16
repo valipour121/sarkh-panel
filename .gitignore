@@ -9,3 +9,4 @@ results_push.json
 results/
 panel_last_run.json
 *_local.py
+chrome_profiles/
