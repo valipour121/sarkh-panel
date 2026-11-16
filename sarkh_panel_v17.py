@@ -72,7 +72,7 @@ import urllib.parse
 import uuid
 import zlib
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
 
 import requests
@@ -1649,8 +1649,14 @@ GUIDE_LOGIN_TEXT = """ورود خودکار و ثبت خودکار هدر سفا
 ۳. سفارش را بفرست. پنل اولین درخواست POST را که آدرسش شامل «کلیدواژه‌ی آدرس سفارش» (پیش‌فرض order) باشد
    و بدنه‌اش شبیه سفارش باشد (حجم + قیمت/نماد) با همه‌ی هدرها، کوکی‌ها و توکن در فیلد «هدر» ذخیره می‌کند.
    POSTهایی که سفارش نیستند نادیده گرفته می‌شوند. کروم را پنل نمی‌بندد؛ بعد از ثبت خودت ببندش (بدون logout).
-۴. وضعیت هر مرحله در خانه‌ی «ورود» نوشته می‌شود و نماد (نام فارسی اگر در درخواست/پاسخ باشد)، حجم، قیمت و
+۴. اگر چند بار سفارش بفرستی، همیشه آخرین سفارش جایگزین می‌شود (نماد/حجم/قیمت را عوض کردی مهم نیست).
+   ۵ ثانیه قبل از شروع اولین درخواست، گوش‌دادن به همه‌ی پروفایل‌ها قطع می‌شود (کروم‌ها باز می‌مانند) تا بار روی سیستم
+   نیفتد؛ در این بازه تا پایان اجرا باز کردن پروفایل جدید هم غیرفعال است.
+۵. وضعیت هر مرحله در خانه‌ی «ورود» نوشته می‌شود و نماد (نام فارسی اگر در درخواست/پاسخ باشد)، حجم، قیمت و
    تاریخ توکن (ثبت از کروم + انقضای JWT) در جدول نمایش داده می‌شود. برای حساب بعدی همین مراحل را تکرار کن.
+۶. آدرس صفحه‌ی ورود: هر بار آن را برای یک حساب دستی بنویسی، پیش‌فرض همه‌ی حساب‌های همان کارگزار می‌شود
+   (حساب‌های بدون آدرس یا با همان آدرس قبلی به‌روز می‌شوند؛ آدرس اختصاصیِ بقیه حفظ می‌شود).
+۷. نام پوشه‌ی پروفایل کروم = «نام کاربری + نام کارگزاری» (داخل chrome_profiles).
 نیازمندی: pip install websocket-client و نصب بودن گوگل کروم (مسیر دلخواه: متغیر محیطی CHROME_PATH).
 کنار شماره‌ی ردیف دو فلش هست: ▲ = رفتن به ردیف ۱ ، ▼ = رفتن به ردیف آخر. با هر تغییر ترتیب (فلش، درگ، حذف)،
 وقفه (600+10×ردیف) و پیش‌گرمی (400+10×ردیف) حساب‌هایی که ردیفشان عوض شده خودکار به‌روز می‌شود.
@@ -1671,6 +1677,16 @@ CSV امروز در پوشه‌ی results کنار برنامه ذخیره می�
 تاریخ جایگزین می‌شوند و تکراری نمی‌ماند. این کار به کتابخانه‌ی openpyxl نیاز دارد:  pip install openpyxl
 کلید (توکن) گیت‌هاب را می‌توانید همان بالای جدول عوض کنید؛ فقط در results_push.json کنار برنامه
 می‌ماند (آن را در گیت‌هاب نگذارید).
+
+همه‌ی کارهای اکسل فقط در همین پنجره‌ی «لاگ نتایج» است (پنل اصلی فقط دکمه‌ی CSV دارد):
+• فایل محلی: «بارگذاری CSV/اکسل از دیسک» (یک فایل ذخیره‌شده را در جدول باز می‌کند تا ویرایشش کنی)،
+  «ذخیره‌ی CSV» و «ذخیره‌ی جدول به‌عنوان…» (CSV یا اکسل، هر جا که خواستی).
+• اکسل تجمعی محلی (کنار برنامه، همان نام sarkhat_result.xlsx): «باز کردن برای ویرایش»،
+  «افزودن جدول» (ردیف‌های هم‌تاریخ جایگزین می‌شوند) و «جایگزینی کل اکسل محلی با جدول».
+• اکسل تجمعی ریپو: «باز کردن اکسل ریپو برای ویرایش»، «افزودن جدول به اکسل ریپو» (همزمان اکسل محلی هم
+  به‌روز می‌شود) و «جایگزینی کل اکسل ریپو با جدول» — برای حذف یا اصلاح ردیف‌های قدیمیِ ریپو:
+  اکسل ریپو را باز کن، ردیف‌ها را حذف/ویرایش کن، بعد «جایگزینی کل…» را بزن.
+• اگر فایل بارگذاری‌شده سرستون‌های متفاوتی داشته باشد، افزودن به اکسل تجمعی خطا می‌دهد (ستون‌ها را عوض نکن).
 """
 
 
@@ -2311,9 +2327,28 @@ def looks_like_order(body_text):
     return has_vol and (has_price or has_sym)
 
 
+def _safe_name(text):
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", text).strip("._") or "profile"
+
+
+def profile_dir_for(acc):
+    """نام پوشه‌ی پروفایل کروم = نام کاربری + نام کارگزاری (پروفایل‌های قدیمیِ ساخته‌شده با id منتقل می‌شوند)."""
+    label = BROKERS.get(acc.get("broker"), {}).get("label", acc.get("broker", ""))
+    display = f"{acc.get('name', '')} {label}".strip()
+    new = os.path.join(PROFILES_DIR, _safe_name(display))
+    old = os.path.join(PROFILES_DIR, str(acc.get("id", "")))
+    if not os.path.exists(new) and os.path.isdir(old):
+        try:
+            os.rename(old, new)
+        except OSError:
+            return old, display
+    return new, display
+
+
 class LoginSession(threading.Thread):
     """یک پروفایل کروم برای یک حساب: پر کردن خودکار ورود + ثبت درخواست سفارش.
-    بستن کروم دستی است؛ پنل هیچ‌وقت کروم را خودش نمی‌بندد."""
+    آخرین سفارشِ فرستاده‌شده همیشه جایگزین قبلی می‌شود. کروم را پنل نمی‌بندد.
+    mute: ۵ ثانیه قبل از شروع ارسال، گوش‌دادن قطع می‌شود تا بار روی سیستم نماند."""
 
     def __init__(self, account, chrome_path, ui_queue):
         super().__init__(daemon=True)
@@ -2321,9 +2356,10 @@ class LoginSession(threading.Thread):
         self.chrome_path = chrome_path
         self.ui_queue = ui_queue
         self.cancel = threading.Event()
+        self.mute = threading.Event()
         self.proc = None
         self.conn = None
-        self.captured = False
+        self.captured = 0     # تعداد سفارش‌های ثبت‌شده
         self.no_auth = False
 
     def _status(self, text):
@@ -2333,8 +2369,7 @@ class LoginSession(threading.Thread):
         try:
             self._run()
         except ConnectionClosed:
-            if not self.captured:
-                self._status("⚠ پروفایل بسته شد، سفارشی ثبت نشد")
+            self._status("✔ ثبت شد (کروم بسته شد)" if self.captured else "⚠ پروفایل بسته شد، سفارشی ثبت نشد")
         except Exception as e:
             self._status(f"❌ {e}")
         finally:
@@ -2367,8 +2402,16 @@ class LoginSession(threading.Thread):
 
     def _run(self):
         acc = self.account
-        profile_dir = os.path.join(PROFILES_DIR, acc["id"])
+        profile_dir, display = profile_dir_for(acc)
         os.makedirs(profile_dir, exist_ok=True)
+        prefs = os.path.join(profile_dir, "Default", "Preferences")
+        if not os.path.exists(prefs):      # اسم پروفایل در کروم = نام کاربری + کارگزاری
+            try:
+                os.makedirs(os.path.dirname(prefs), exist_ok=True)
+                with open(prefs, "w", encoding="utf-8") as f:
+                    json.dump({"profile": {"name": display}}, f, ensure_ascii=False)
+            except OSError:
+                pass
         port = _free_port()
         login_url = (acc.get("login_url") or "").strip()
         args = [
@@ -2390,15 +2433,15 @@ class LoginSession(threading.Thread):
         attached_targets = set()
         attach_cmds = {}   # command id -> targetId
         post_cmds = {}     # command id -> request key
-        body_cmds = {}     # command id -> True (getResponseBody)
+        body_cmds = {}     # command id -> hash هدر ثبت‌شده (getResponseBody)
         reqs = {}          # (sessionId, requestId) -> candidate POST
         extras = {}        # (sessionId, requestId) -> full headers incl. cookies
-        seen_ignored = set()
-        resp_key = None
-        resp_deadline = 0.0
+        resp_keys = {}     # درخواست‌های ثبت‌شده که منتظر پاسخشان هستیم -> hash هدر
         finished = set()   # درخواست‌هایی که پاسخشان کامل شده (ممکن است قبل از ثبتِ ما برسد)
+        seen_ignored = set()
+        last_seen = 0.0
 
-        while not self.cancel.is_set():
+        while not (self.cancel.is_set() or self.mute.is_set()):
             msg = self.conn.recv()
             if msg is not None:
                 if "id" in msg:
@@ -2414,7 +2457,7 @@ class LoginSession(threading.Thread):
                             reqs[key]["postData"] = (msg.get("result") or {}).get("postData", "")
                             reqs[key]["post_done"] = True
                     elif cid in body_cmds:
-                        body_cmds.pop(cid)
+                        hh = body_cmds.pop(cid)
                         res = msg.get("result") or {}
                         text = res.get("body", "") or ""
                         if res.get("base64Encoded"):
@@ -2423,8 +2466,7 @@ class LoginSession(threading.Thread):
                             except Exception:
                                 text = ""
                         if text:
-                            self.ui_queue.put(("response", acc["id"], text[:50000]))
-                        break
+                            self.ui_queue.put(("response", acc["id"], text[:50000], hh))
                 else:
                     method = msg.get("method")
                     params = msg.get("params") or {}
@@ -2436,7 +2478,7 @@ class LoginSession(threading.Thread):
                             attached_targets.add(tid)
                             cid = self.conn.send("Target.attachToTarget", {"targetId": tid, "flatten": True})
                             attach_cmds[cid] = tid
-                    elif method == "Network.requestWillBeSent" and sid and not self.captured:
+                    elif method == "Network.requestWillBeSent" and sid:
                         req = params.get("request") or {}
                         if (req.get("method") or "").upper() == "POST" and keyword in (req.get("url") or "").lower():
                             key = (sid, params.get("requestId"))
@@ -2452,54 +2494,58 @@ class LoginSession(threading.Thread):
                                 cid = self.conn.send("Network.getRequestPostData",
                                                      {"requestId": params.get("requestId")}, sid)
                                 post_cmds[cid] = key
-                    elif method == "Network.requestWillBeSentExtraInfo" and sid and not self.captured:
+                    elif method == "Network.requestWillBeSentExtraInfo" and sid:
                         extras[(sid, params.get("requestId"))] = params.get("headers") or {}
                         if len(extras) > 3000:
                             for k in list(extras)[:1500]:
                                 extras.pop(k, None)
                     elif method == "Network.loadingFinished" and sid:
                         fkey = (sid, params.get("requestId"))
-                        if resp_key and fkey == resp_key:
-                            cid = self.conn.send("Network.getResponseBody", {"requestId": resp_key[1]}, sid)
-                            body_cmds[cid] = True
-                        elif not self.captured and fkey in reqs:
+                        if fkey in resp_keys:
+                            cid = self.conn.send("Network.getResponseBody", {"requestId": fkey[1]}, sid)
+                            body_cmds[cid] = resp_keys.pop(fkey)
+                        elif fkey in reqs:
                             finished.add(fkey)
+                            if len(finished) > 200:
+                                finished.clear()
 
-            if not self.captured:
-                for key, entry in list(reqs.items()):
-                    if entry["post_done"] and (key in extras or time.time() - entry["seen"] > 1.5):
-                        reqs.pop(key, None)
-                        if not looks_like_order(entry.get("postData") or ""):
-                            tag = entry["url"].split("?")[0][-40:]
-                            if tag not in seen_ignored:
-                                seen_ignored.add(tag)
-                                self._status(f"👀 POST دیده شد ولی سفارش نبود: …{tag}")
-                            continue
-                        self._capture(entry, extras.get(key, {}))
-                        self.captured = True
-                        resp_key = key
-                        resp_deadline = time.time() + 6
-                        if key in finished:   # پاسخ از قبل رسیده بود
-                            cid = self.conn.send("Network.getResponseBody", {"requestId": key[1]}, key[0])
-                            body_cmds[cid] = True
-                        break
-            elif time.time() > resp_deadline:
-                break
+            for key, entry in list(reqs.items()):
+                if entry["post_done"] and (key in extras or time.time() - entry["seen"] > 1.5):
+                    reqs.pop(key, None)
+                    if entry["seen"] < last_seen:      # سفارشِ قدیمی‌تر که دیر کامل شد: آخرین سفارش مهم است
+                        continue
+                    if not looks_like_order(entry.get("postData") or ""):
+                        tag = entry["url"].split("?")[0][-40:]
+                        if tag not in seen_ignored:
+                            seen_ignored.add(tag)
+                            self._status(f"👀 POST دیده شد ولی سفارش نبود: …{tag}")
+                        continue
+                    last_seen = entry["seen"]
+                    hh = self._capture(entry, extras.get(key, {}))
+                    self.captured += 1
+                    self._status(("⚠ ثبت شد ولی کوکی/توکنی در درخواست نبود" if self.no_auth else
+                                  f"✔ آخرین سفارش ثبت شد (#{self.captured})") + " — کروم را خودتان ببندید")
+                    if key in finished:
+                        finished.discard(key)
+                        cid = self.conn.send("Network.getResponseBody", {"requestId": key[1]}, key[0])
+                        body_cmds[cid] = hh
+                    else:
+                        resp_keys[key] = hh
+                        if len(resp_keys) > 50:
+                            resp_keys.pop(next(iter(resp_keys)), None)
 
-        if not self.captured:
-            self._status("⏹ لغو شد")
-            return
-
-        # سفارش ثبت شد: اتصال دیباگ را قطع می‌کنیم (بار اضافه روی سیستم نماند) ولی کروم را نمی‌بندیم.
+        # ---- پایان گوش‌دادن (لغو یا ۵ ثانیه مانده به شروع) — کروم باز می‌ماند ----
         if self.conn:
             self.conn.close()
             self.conn = None
-        self._status("⚠ ثبت شد ولی کوکی/توکنی در درخواست نبود — کروم را خودتان ببندید" if self.no_auth
-                     else "✔ سفارش ثبت شد — کروم را خودتان ببندید")
+        if self.cancel.is_set():
+            return
+        self._status((f"✔ آخرین سفارش ثبت شد (#{self.captured})" if self.captured else "⏸ سفارشی ثبت نشده")
+                     + " — گوش‌دادن متوقف شد؛ کروم را خودتان ببندید")
         while self.proc.poll() is None and not self.cancel.is_set():
             time.sleep(0.5)
         if self.proc.poll() is not None:
-            self._status("✔ ثبت شد (کروم بسته شد)")
+            self._status("✔ ثبت شد (کروم بسته شد)" if self.captured else "⚠ پروفایل بسته شد، سفارشی ثبت نشد")
 
     def _capture(self, entry, extra):
         merged = {}
@@ -2512,6 +2558,7 @@ class LoginSession(threading.Thread):
         curl = build_curl(entry["url"], entry["method"], headers, entry.get("postData") or "")
         self.no_auth = not ("cookie" in merged or "authorization" in merged)
         self.ui_queue.put(("captured", self.account["id"], curl, time.time()))
+        return header_hash(curl)
 
 
 class AccountDialog(tk.Toplevel):
@@ -2559,6 +2606,7 @@ class AccountDialog(tk.Toplevel):
         broker_box = ttk.Combobox(self, textvariable=self.broker_var, state="readonly",
                                    values=[self.broker_labels[k] for k in broker_keys], width=18)
         broker_box.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+        broker_box.bind("<<ComboboxSelected>>", self._on_broker_change)
         ttk.Checkbutton(self, text="فعال", variable=self.enabled_var).grid(row=row, column=2, sticky="w")
         row += 1
 
@@ -2566,7 +2614,8 @@ class AccountDialog(tk.Toplevel):
         login_frame.grid(row=row, column=0, columnspan=3, sticky="we", padx=6, pady=4)
         self.login_user_var = tk.StringVar(value=self.account.get("login_username", ""))
         self.login_pass_var = tk.StringVar(value=self.account.get("login_password", ""))
-        self.login_url_var = tk.StringVar(value=self.account.get("login_url", ""))
+        self.login_url_var = tk.StringVar(
+            value=self.account.get("login_url") or self._broker_default_url(self.account.get("broker")))
         self.order_kw_var = tk.StringVar(value=self.account.get("order_keyword", "order") or "order")
         ttk.Label(login_frame, text="یوزرنیم ورود:").grid(row=0, column=0, sticky="e", padx=4, pady=2)
         ttk.Entry(login_frame, textvariable=self.login_user_var, width=26).grid(row=0, column=1, sticky="w", padx=4, pady=2)
@@ -2622,6 +2671,16 @@ class AccountDialog(tk.Toplevel):
     def _clear_header(self):
         self.header_text.delete("1.0", "end")
         self.header_text.focus_set()
+
+    def _broker_default_url(self, broker_key):
+        return (getattr(self.master, "broker_login_urls", {}) or {}).get(broker_key, "")
+
+    def _on_broker_change(self, _event=None):
+        key = self.label_to_key.get(self.broker_var.get())
+        cur = self.login_url_var.get().strip()
+        known_defaults = set((getattr(self.master, "broker_login_urls", {}) or {}).values())
+        if key and (not cur or cur in known_defaults):
+            self.login_url_var.set(self._broker_default_url(key))
 
     def _build_order_fields(self):
         for w in self.order_frame.winfo_children():
@@ -3738,14 +3797,116 @@ def github_append_results(token, repo, path, header, rows, message, branch="", t
     return False, "ناموفق", 0
 
 
+# ---------------------------------------------------------------------------
+# کار با اکسل نتایج: خواندن/نوشتن محلی، ویرایش کامل، جایگزینی در ریپو (v17)
+# ---------------------------------------------------------------------------
+def _xl_cell_str(v):
+    if v is None:
+        return ""
+    if hasattr(v, "strftime"):
+        return v.strftime("%Y-%m-%d")
+    if isinstance(v, float) and v == int(v):
+        return str(int(v))
+    return str(v)
+
+
+def xlsx_read_rows(data):
+    """بایت‌های یک فایل اکسل را به (سرستون‌ها، ردیف‌ها) تبدیل می‌کند (همه‌چیز رشته)."""
+    try:
+        import openpyxl
+    except ImportError:
+        raise RuntimeError("برای کار با اکسل کتابخانه‌ی openpyxl لازم است؛ در CMD بزنید:  pip install openpyxl")
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(data), data_only=True)
+    ws = wb[RESULT_SHEET] if RESULT_SHEET in wb.sheetnames else wb.active
+    allrows = list(ws.iter_rows(values_only=True))
+    if not allrows:
+        return list(RESULT_COLUMNS), []
+    header = [_xl_cell_str(c).strip() for c in allrows[0]]
+    while header and header[-1] == "":
+        header.pop()
+    out = []
+    for r in allrows[1:]:
+        vals = [_xl_cell_str(v) for v in list(r)[:len(header)]]
+        vals += [""] * (len(header) - len(vals))
+        if any(v != "" for v in vals):
+            out.append(vals)
+    return header, out
+
+
+def xlsx_build(header, rows):
+    """یک اکسل کاملاً تازه از جدول می‌سازد (همان قالب‌بندی اکسل تجمعی)."""
+    return xlsx_merge_rows(b"", header, rows)[0]
+
+
+def write_bytes_atomic(path, data):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def local_xlsx_merge(path, header, rows):
+    """ردیف‌ها را به اکسل تجمعیِ محلی اضافه می‌کند (ردیف‌های هم‌تاریخ جایگزین می‌شوند). خروجی: تعداد جایگزین‌شده."""
+    existing = b""
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            existing = f.read()
+    new_bytes, replaced = xlsx_merge_rows(existing, header, rows)
+    write_bytes_atomic(path, new_bytes)
+    return replaced
+
+
+def _github_guard(fn):
+    try:
+        return fn()
+    except GithubError as e:
+        return False, str(e)
+    except (RuntimeError, ValueError) as e:
+        return False, str(e)
+    except requests.RequestException as e:
+        return False, f"خطای شبکه: {e}"
+    except Exception as e:
+        return False, f"خطای غیرمنتظره: {e}"
+
+
+def github_read_xlsx(token, repo, path, branch="", timeout=30):
+    """(True، (سرستون‌ها، ردیف‌ها)) یا (False، پیام خطا)."""
+    def go():
+        data, _sha = github_get_file(token, repo, path, branch, timeout)
+        if data is None:
+            return False, "این اکسل هنوز در ریپو وجود ندارد."
+        return True, xlsx_read_rows(data)
+    return _github_guard(go)
+
+
+def github_replace_xlsx(token, repo, path, header, rows, message, branch="", timeout=30):
+    """کل اکسل ریپو را با این جدول جایگزین می‌کند (برای حذف/ویرایش ردیف‌ها). (True، لینک) یا (False، خطا)."""
+    def go():
+        for attempt in range(2):
+            try:
+                _data, sha = github_get_file(token, repo, path, branch, timeout)
+                url = github_put_bytes(token, repo, path, xlsx_build(header, rows), message, sha, branch, timeout)
+                return True, url
+            except GithubError as e:
+                if attempt == 0 and e.status in (409, 422):
+                    continue
+                raise
+        return False, "ناموفق"
+    return _github_guard(go)
+
+
 class ResultsWindow(tk.Toplevel):
-    """جدول نتایج روزانه: ویرایش دستی خانه‌ها، ذخیره‌ی فایل CSV و پوش به ریپوی نتایج."""
+    """صفحه‌ی لاگ نتایج: ویرایش جدول، CSV، اکسل تجمعیِ محلی و اکسل تجمعیِ ریپو (همه‌ی کارهای اکسل فقط اینجاست)."""
 
     def __init__(self, app, path, header, rows):
         super().__init__(app)
         self.app = app
-        self.title("نتایج روزانه (CSV) — ویرایش، ذخیره و افزودن به اکسل تجمعی")
-        self.geometry("1180x600")
+        self.title("نتایج روزانه — CSV و اکسل تجمعی (محلی و ریپو)")
+        self.geometry("1240x760")
         self.header = list(header) or list(RESULT_COLUMNS)
         self.rows = [list(r) + [""] * (len(self.header) - len(r)) for r in rows]
         cfg = read_json(RESULT_PUSH_PATH, {}) or {}
@@ -3756,9 +3917,11 @@ class ResultsWindow(tk.Toplevel):
         self.symbol_var = tk.StringVar()
         self.hard_var = tk.StringVar()
         self.show_var = tk.BooleanVar(value=False)
+        self.local_too_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value=f"فایل: {path}")
         self._edit = None
         self._q = queue.Queue()
+        self._busy_btns = []
 
         top = ttk.LabelFrame(self, text="ریپوی نتایج و کلید دسترسی")
         top.pack(fill="x", padx=6, pady=(6, 0))
@@ -3768,13 +3931,12 @@ class ResultsWindow(tk.Toplevel):
         self.token_entry = ttk.Entry(r1, textvariable=self.token_var, width=56, show="•")
         self.token_entry.pack(side="left", padx=(0, 6))
         ttk.Checkbutton(r1, text="نمایش", variable=self.show_var, command=self._toggle_show).pack(side="left")
-        ttk.Label(r1, text="(فقط در results_push.json کنار برنامه ذخیره می‌شود؛ هر وقت کلید عوض شد همین‌جا بچسبانید)",
-                  foreground="#666").pack(side="left", padx=8)
+        ttk.Label(r1, text="(فقط در results_push.json کنار برنامه ذخیره می‌شود)", foreground="#666").pack(side="left", padx=8)
         r2 = ttk.Frame(top)
         r2.pack(fill="x", pady=2)
         ttk.Label(r2, text="ریپو (owner/name):").pack(side="left", padx=(6, 2))
         ttk.Entry(r2, textvariable=self.repo_var, width=28).pack(side="left", padx=(0, 10))
-        ttk.Label(r2, text="اکسل تجمعی در ریپو:").pack(side="left", padx=(0, 2))
+        ttk.Label(r2, text="اکسل تجمعی (هم در ریپو، هم کنار برنامه):").pack(side="left", padx=(0, 2))
         ttk.Entry(r2, textvariable=self.xlsx_var, width=22).pack(side="left", padx=(0, 10))
         ttk.Label(r2, text="نام CSV محلی:").pack(side="left", padx=(0, 2))
         ttk.Entry(r2, textvariable=self.file_var, width=26).pack(side="left")
@@ -3786,17 +3948,12 @@ class ResultsWindow(tk.Toplevel):
         ttk.Label(mid, text="سختی نماد:").pack(side="left", padx=(0, 2))
         ttk.Entry(mid, textvariable=self.hard_var, width=18).pack(side="left", padx=(0, 10))
         ttk.Button(mid, text="اعمال روی همه‌ی ردیف‌ها", command=self._apply_defaults).pack(side="left", padx=4)
+        ttk.Button(mid, text="🗑 حذف ردیف‌های انتخابی", command=self._delete_selected).pack(side="left", padx=(24, 4))
+        ttk.Button(mid, text="انتخاب همه", command=lambda: self.tree.selection_set(self.tree.get_children())).pack(side="left", padx=4)
 
         frame = ttk.Frame(self)
         frame.pack(fill="both", expand=True, padx=6, pady=6)
-        cols = [f"c{i}" for i in range(len(self.header))]
-        self.tree = ttk.Treeview(frame, columns=cols, show="headings", selectmode="extended")
-        widths = {"تاریخ": 85, "نام کاربر": 110, "رتبه": 50, "نتیجه": 150, "نام کارگزار": 85, "نام نماد": 90,
-                  "سختی نماد": 80, "تریگر": 95, "زمان ارسال": 95, "ورژن برنامه (تکنولوژی)": 120,
-                  "تعداد درخواست": 80, "جزئیات درخواست‌ها": 420}
-        for c, h in zip(cols, self.header):
-            self.tree.heading(c, text=h)
-            self.tree.column(c, width=widths.get(h, 100), anchor="center")
+        self.tree = ttk.Treeview(frame, columns=(), show="headings", selectmode="extended")
         ysb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         xsb = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
@@ -3806,26 +3963,90 @@ class ResultsWindow(tk.Toplevel):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", self._on_double_click)
-        self._reload_tree()
+        self._setup_columns()
+
+        # ---- کار با فایل‌ها ----
+        f1 = ttk.LabelFrame(self, text="فایل محلی (CSV / اکسل)")
+        f1.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Button(f1, text="📂 بارگذاری CSV/اکسل از دیسک", command=self._load_file).pack(side="left", padx=3, pady=3)
+        ttk.Button(f1, text="💾 ذخیره‌ی CSV", command=self._save_clicked).pack(side="left", padx=3)
+        ttk.Button(f1, text="📤 ذخیره‌ی جدول به‌عنوان… (CSV/اکسل)", command=self._save_as).pack(side="left", padx=3)
+
+        f2 = ttk.LabelFrame(self, text=f"اکسل تجمعی محلی (در پوشه‌ی برنامه: {STATE_DIR})")
+        f2.pack(fill="x", padx=6, pady=(0, 4))
+        for text, cmd in (("📂 باز کردن برای ویرایش", self._open_local_xlsx),
+                          ("➕ افزودن جدول به اکسل محلی", self._local_append),
+                          ("♻ جایگزینی کل اکسل محلی با جدول", self._local_replace)):
+            ttk.Button(f2, text=text, command=cmd).pack(side="left", padx=3, pady=3)
+
+        f3 = ttk.LabelFrame(self, text="اکسل تجمعی در ریپو")
+        f3.pack(fill="x", padx=6, pady=(0, 4))
+        self.open_repo_btn = ttk.Button(f3, text="📥 باز کردن اکسل ریپو برای ویرایش", command=self._open_repo_xlsx)
+        self.push_btn = ttk.Button(f3, text="⬆ افزودن جدول به اکسل ریپو", command=self._push)
+        self.replace_repo_btn = ttk.Button(f3, text="♻ جایگزینی کل اکسل ریپو با جدول (حذف/ویرایش ردیف‌ها)", command=self._repo_replace)
+        for b in (self.open_repo_btn, self.push_btn, self.replace_repo_btn):
+            b.pack(side="left", padx=3, pady=3)
+            self._busy_btns.append(b)
+        ttk.Checkbutton(f3, text="هنگام «افزودن به ریپو»، در اکسل محلی هم اضافه شود", variable=self.local_too_var).pack(side="left", padx=12)
 
         bar = ttk.Frame(self)
-        bar.pack(fill="x", padx=6, pady=(0, 4))
-        ttk.Button(bar, text="💾 ذخیره‌ی فایل", command=self._save_clicked).pack(side="left", padx=2)
-        self.push_btn = ttk.Button(bar, text="⬆ افزودن به اکسل تجمعی در ریپو", command=self._push)
-        self.push_btn.pack(side="left", padx=2)
-        ttk.Button(bar, text="🗑 حذف ردیف انتخابی", command=self._delete_selected).pack(side="left", padx=(14, 2))
+        bar.pack(fill="x", padx=6, pady=(0, 2))
         ttk.Button(bar, text="بستن", command=self.destroy).pack(side="right", padx=2)
-        ttk.Label(self, textvariable=self.status_var, foreground="#444", wraplength=1140, justify="left").pack(
-            fill="x", padx=8, pady=(0, 6))
-        ttk.Label(self, text="روی هر خانه دابل‌کلیک کنید تا ویرایش شود (Enter = ثبت، Esc = انصراف).",
-                  foreground="#666").pack(fill="x", padx=8, pady=(0, 6))
+        ttk.Label(self, textvariable=self.status_var, foreground="#444", wraplength=1200, justify="left").pack(
+            fill="x", padx=8, pady=(0, 2))
+        ttk.Label(self, text="روی هر خانه دابل‌کلیک کنید تا ویرایش شود (Enter = ثبت، Esc = انصراف). "
+                             "«افزودن» ردیف‌های هم‌تاریخ قبلی را جایگزین می‌کند؛ «جایگزینی کل» اکسل را دقیقاً مثل جدول می‌کند.",
+                  foreground="#666", wraplength=1200, justify="left").pack(fill="x", padx=8, pady=(0, 6))
         self.after(150, self._poll)
 
     # ---- جدول ----
+    _WIDTHS = {"تاریخ": 85, "نام کاربر": 110, "رتبه": 50, "نتیجه": 150, "نام کارگزار": 85, "نام نماد": 90,
+               "سختی نماد": 80, "تریگر": 95, "زمان ارسال": 95, "ورژن برنامه (تکنولوژی)": 120,
+               "تعداد درخواست": 80, "جزئیات درخواست‌ها": 420}
+
+    def _setup_columns(self):
+        cols = [f"c{i}" for i in range(len(self.header))]
+        self.tree.configure(columns=cols)
+        for c, h in zip(cols, self.header):
+            self.tree.heading(c, text=h)
+            self.tree.column(c, width=self._WIDTHS.get(h, 100), anchor="center")
+        self._reload_tree()
+
     def _reload_tree(self):
         self.tree.delete(*self.tree.get_children())
         for i, r in enumerate(self.rows):
             self.tree.insert("", "end", iid=str(i), values=r)
+
+    def _set_table(self, header, rows, label):
+        """جدول را با داده‌ی تازه پر می‌کند؛ اگر جدول فعلی ردیف دارد می‌پرسد جایگزین شود یا به انتها اضافه."""
+        self._end_edit(True)
+        header = list(header) or list(RESULT_COLUMNS)
+        rows = [list(r) + [""] * (len(header) - len(r)) for r in rows]
+        append = False
+        if self.rows:
+            if header != self.header:
+                if not messagebox.askyesno("جایگزینی جدول",
+                                           "سرستون‌های فایل با جدول فعلی یکی نیست؛ جدول فعلی کاملاً جایگزین شود؟", parent=self):
+                    return
+            else:
+                ans = messagebox.askyesnocancel(
+                    "جدول فعلی ردیف دارد",
+                    f"جدول فعلی {len(self.rows)} ردیف دارد و فایل {len(rows)} ردیف.\n\n"
+                    "بله = جایگزین جدول فعلی\nخیر = اضافه به انتهای جدول فعلی\nلغو = انصراف", parent=self)
+                if ans is None:
+                    return
+                append = ans is False
+        if append:
+            self.rows.extend(rows)
+        else:
+            self.header = header
+            self.rows = rows
+            self._setup_columns()
+        self._reload_tree()
+        note = ""
+        if header != list(RESULT_COLUMNS):
+            note = " — ⚠ سرستون‌ها با قالب استانداردِ برنامه یکی نیست؛ افزودن به اکسل تجمعی ممکن است خطا بدهد."
+        self.status_var.set(f"{label} ({len(rows)} ردیف بارگذاری شد؛ جدول: {len(self.rows)} ردیف){note}")
 
     def _toggle_show(self):
         self.token_entry.config(show="" if self.show_var.get() else "•")
@@ -3854,6 +4075,8 @@ class ResultsWindow(tk.Toplevel):
             if 0 <= i < len(self.rows):
                 del self.rows[i]
         self._reload_tree()
+        if idx:
+            self.status_var.set(f"{len(idx)} ردیف از جدول حذف شد (برای اعمال روی اکسل، «جایگزینی کل…» را بزنید).")
 
     def _on_double_click(self, event):
         if self.tree.identify("region", event.x, event.y) != "cell":
@@ -3901,12 +4124,18 @@ class ResultsWindow(tk.Toplevel):
             except tk.TclError:
                 pass
 
-    # ---- فایل ----
+    # ---- فایل محلی ----
     def _local_path(self):
         name = re.sub(r'[\\/:*?"<>|]', "_", self.file_var.get().strip()) or "results.csv"
         if not name.lower().endswith(".csv"):
             name += ".csv"
         return os.path.join(RESULTS_DIR, name)
+
+    def _local_xlsx_path(self):
+        name = re.sub(r'[\\/:*?"<>|]', "_", os.path.basename(self.xlsx_var.get().strip())) or DEFAULT_RESULT_XLSX
+        if not name.lower().endswith(".xlsx"):
+            name += ".xlsx"
+        return os.path.join(STATE_DIR, name)
 
     def _write_local(self):
         self._end_edit(True)
@@ -3922,47 +4151,189 @@ class ResultsWindow(tk.Toplevel):
             return
         self.status_var.set(f"ذخیره شد ({len(self.rows)} ردیف): {path}")
 
-    # ---- پوش ----
-    def _push(self):
+    def _save_as(self):
         self._end_edit(True)
+        path = filedialog.asksaveasfilename(
+            parent=self, title="ذخیره‌ی جدول", defaultextension=".csv", initialdir=RESULTS_DIR if os.path.isdir(RESULTS_DIR) else STATE_DIR,
+            initialfile=os.path.basename(self._local_path()),
+            filetypes=[("CSV", "*.csv"), ("Excel", "*.xlsx")])
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".xlsx"):
+                write_bytes_atomic(path, xlsx_build(self.header, self.rows))
+            else:
+                write_results_csv(path, self.header, self.rows)
+        except (OSError, RuntimeError, ValueError) as e:
+            messagebox.showerror("خطا", f"ذخیره‌ی فایل ناموفق بود:\n{e}", parent=self)
+            return
+        self.status_var.set(f"ذخیره شد ({len(self.rows)} ردیف): {path}")
+
+    def _load_file(self):
+        self._end_edit(True)
+        path = filedialog.askopenfilename(
+            parent=self, title="بارگذاری فایل نتایج",
+            initialdir=RESULTS_DIR if os.path.isdir(RESULTS_DIR) else STATE_DIR,
+            filetypes=[("CSV / Excel", "*.csv *.xlsx"), ("CSV", "*.csv"), ("Excel", "*.xlsx")])
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".xlsx"):
+                with open(path, "rb") as f:
+                    header, rows = xlsx_read_rows(f.read())
+            else:
+                header, rows = read_results_csv(path)
+        except (OSError, csv.Error, RuntimeError, ValueError, KeyError) as e:
+            messagebox.showerror("خطا", f"خواندن فایل ناموفق بود:\n{e}", parent=self)
+            return
+        self._set_table(header, rows, f"فایل بارگذاری‌شده: {path}")
+        if path.lower().endswith(".csv"):
+            self.file_var.set(os.path.basename(path))
+
+    # ---- اکسل تجمعی محلی ----
+    def _open_local_xlsx(self):
+        path = self._local_xlsx_path()
+        if not os.path.exists(path):
+            messagebox.showinfo("راهنما", f"اکسل محلی هنوز ساخته نشده:\n{path}\n(با «افزودن جدول به اکسل محلی» ساخته می‌شود.)", parent=self)
+            return
+        try:
+            with open(path, "rb") as f:
+                header, rows = xlsx_read_rows(f.read())
+        except (OSError, RuntimeError, ValueError, KeyError) as e:
+            messagebox.showerror("خطا", f"خواندن اکسل محلی ناموفق بود:\n{e}", parent=self)
+            return
+        self._set_table(header, rows, f"اکسل محلی: {path}")
+
+    def _local_append(self):
+        self._end_edit(True)
+        if not self.rows:
+            messagebox.showerror("خطا", "جدول خالی است.", parent=self)
+            return
+        path = self._local_xlsx_path()
+        try:
+            replaced = local_xlsx_merge(path, self.header, self.rows)
+        except PermissionError:
+            messagebox.showerror("خطا", f"فایل اکسل باز است و نوشته نمی‌شود؛ آن را در اکسل ببندید:\n{path}", parent=self)
+            return
+        except (OSError, RuntimeError, ValueError) as e:
+            messagebox.showerror("خطا", f"افزودن به اکسل محلی ناموفق بود:\n{e}", parent=self)
+            return
+        extra = f" ({replaced} ردیف قدیمیِ همان تاریخ جایگزین شد)" if replaced else ""
+        self.status_var.set(f"✔ {len(self.rows)} ردیف به اکسل محلی اضافه شد{extra}: {path}")
+
+    def _local_replace(self):
+        self._end_edit(True)
+        path = self._local_xlsx_path()
+        if not messagebox.askyesno("جایگزینی کل اکسل محلی",
+                                   f"کل فایل\n{path}\nدقیقاً با این جدول ({len(self.rows)} ردیف) جایگزین شود؟\n"
+                                   "ردیف‌هایی که در جدول نیستند از اکسل محلی پاک می‌شوند.", parent=self):
+            return
+        try:
+            write_bytes_atomic(path, xlsx_build(self.header, self.rows))
+        except PermissionError:
+            messagebox.showerror("خطا", f"فایل اکسل باز است و نوشته نمی‌شود؛ آن را در اکسل ببندید:\n{path}", parent=self)
+            return
+        except (OSError, RuntimeError, ValueError) as e:
+            messagebox.showerror("خطا", f"نوشتن اکسل محلی ناموفق بود:\n{e}", parent=self)
+            return
+        self.status_var.set(f"✔ اکسل محلی با جدول ({len(self.rows)} ردیف) جایگزین شد: {path}")
+
+    # ---- اکسل ریپو ----
+    def _repo_cfg(self):
         token = self.token_var.get().strip()
         repo = self.repo_var.get().strip().strip("/")
         xlsx = self.xlsx_var.get().strip().strip("/")
         if not token:
             messagebox.showerror("خطا", "کلید دسترسی (توکن) را بالای جدول وارد کنید.", parent=self)
-            return
+            return None
         if not token.isascii() or any(c.isspace() for c in token):
             messagebox.showerror("خطا", "کلید فقط شامل حروف انگلیسی/عدد/زیرخط است (فاصله یا متن فارسی نباید داشته باشد).", parent=self)
-            return
+            return None
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
             messagebox.showerror("خطا", "ریپو باید به شکل owner/name باشد؛ مثلاً valipour121/sarkh-panel", parent=self)
-            return
+            return None
         if not xlsx or not xlsx.lower().endswith(".xlsx"):
             messagebox.showerror("خطا", "مسیر فایل اکسل در ریپو باید با .xlsx تمام شود؛ مثلاً sarkhat_result.xlsx", parent=self)
-            return
-        if not self.rows:
-            messagebox.showerror("خطا", "جدول خالی است.", parent=self)
-            return
-        try:
-            self._write_local()      # CSV امروز همیشه محلی هم ذخیره می‌شود
-        except OSError as e:
-            messagebox.showerror("خطا", f"ذخیره‌ی فایل CSV ناموفق بود:\n{e}", parent=self)
-            return
+            return None
         try:
             write_json_atomic(RESULT_PUSH_PATH, {"token": token, "repo": repo, "xlsx": xlsx})
             os.chmod(RESULT_PUSH_PATH, 0o600)
         except OSError:
             pass
+        return token, repo, xlsx
+
+    def _busy(self, on):
+        for b in self._busy_btns:
+            b.config(state="disabled" if on else "normal")
+
+    def _open_repo_xlsx(self):
+        self._end_edit(True)
+        cfg = self._repo_cfg()
+        if not cfg:
+            return
+        token, repo, xlsx = cfg
+        self._busy(True)
+        self.status_var.set(f"در حال گرفتن {repo}/{xlsx} ...")
+
+        def work():
+            ok, data = github_read_xlsx(token, repo, xlsx)
+            self._q.put({"kind": "repo_open", "ok": ok, "data": data, "repo": repo, "xlsx": xlsx})
+        threading.Thread(target=work, daemon=True).start()
+
+    def _repo_replace(self):
+        self._end_edit(True)
+        cfg = self._repo_cfg()
+        if not cfg:
+            return
+        token, repo, xlsx = cfg
+        if not messagebox.askyesno("جایگزینی کل اکسل ریپو",
+                                   f"کل {xlsx} در ریپو {repo} دقیقاً با این جدول ({len(self.rows)} ردیف) جایگزین شود؟\n"
+                                   "ردیف‌هایی که در جدول نیستند از ریپو پاک می‌شوند (تاریخچه‌ی گیت می‌ماند).", parent=self):
+            return
+        header, rows = list(self.header), [list(r) for r in self.rows]
+        message = f"ویرایش اکسل نتایج از پنل — {len(rows)} ردیف — {RESULT_TECH_LABEL}"
+        self._busy(True)
+        self.status_var.set(f"در حال جایگزینی {repo}/{xlsx} ...")
+
+        def work():
+            ok, info = github_replace_xlsx(token, repo, xlsx, header, rows, message)
+            self._q.put({"kind": "repo_replace", "ok": ok, "info": info, "repo": repo, "xlsx": xlsx, "n": len(rows)})
+        threading.Thread(target=work, daemon=True).start()
+
+    def _push(self):
+        self._end_edit(True)
+        cfg = self._repo_cfg()
+        if not cfg:
+            return
+        token, repo, xlsx = cfg
+        if not self.rows:
+            messagebox.showerror("خطا", "جدول خالی است.", parent=self)
+            return
+        try:
+            self._write_local()      # CSV همیشه محلی هم ذخیره می‌شود
+        except OSError as e:
+            messagebox.showerror("خطا", f"ذخیره‌ی فایل CSV ناموفق بود:\n{e}", parent=self)
+            return
+        local_note = ""
+        if self.local_too_var.get():
+            lp = self._local_xlsx_path()
+            try:
+                rep = local_xlsx_merge(lp, self.header, self.rows)
+                local_note = f"\nاکسل محلی هم به‌روز شد: {lp}" + (f" ({rep} ردیف همان تاریخ جایگزین شد)" if rep else "")
+            except PermissionError:
+                local_note = f"\n⚠ اکسل محلی باز است و نوشته نشد (در اکسل ببندید): {lp}"
+            except (OSError, RuntimeError, ValueError) as e:
+                local_note = f"\n⚠ افزودن به اکسل محلی ناموفق بود: {e}"
         header, rows = list(self.header), [list(r) for r in self.rows]
         dates = sorted({r[0] for r in rows if r and r[0]})
         message = f"نتایج {'، '.join(dates)} — {len(rows)} ردیف — {RESULT_TECH_LABEL}"
-        self.push_btn.config(state="disabled")
+        self._busy(True)
         self.status_var.set(f"در حال افزودن به {repo}/{xlsx} ...")
 
         def work():
             ok, info, replaced = github_append_results(token, repo, xlsx, header, rows, message)
-            self._q.put((ok, info, repo, xlsx, replaced, len(rows)))
-
+            self._q.put({"kind": "push", "ok": ok, "info": info, "repo": repo, "xlsx": xlsx,
+                         "replaced": replaced, "n": len(rows), "local_note": local_note})
         threading.Thread(target=work, daemon=True).start()
 
     def _poll(self):
@@ -3970,15 +4341,31 @@ class ResultsWindow(tk.Toplevel):
             return
         try:
             while True:
-                ok, info, repo, xlsx, replaced, n = self._q.get_nowait()
-                self.push_btn.config(state="normal")
-                if ok:
-                    extra = f" ({replaced} ردیف قدیمیِ همان تاریخ جایگزین شد)" if replaced else ""
-                    self.status_var.set(f"✔ {n} ردیف به {xlsx} اضافه شد{extra}: {info}")
-                    messagebox.showinfo("انجام شد", f"{n} ردیف به اکسل تجمعی در ریپو {repo} اضافه شد{extra}:\n{info}", parent=self)
-                else:
-                    self.status_var.set(f"✖ ناموفق: {info}")
-                    messagebox.showerror("ناموفق", info, parent=self)
+                it = self._q.get_nowait()
+                self._busy(False)
+                kind = it["kind"]
+                if kind == "push":
+                    if it["ok"]:
+                        extra = f" ({it['replaced']} ردیف قدیمیِ همان تاریخ جایگزین شد)" if it["replaced"] else ""
+                        self.status_var.set(f"✔ {it['n']} ردیف به {it['xlsx']} اضافه شد{extra}: {it['info']}")
+                        messagebox.showinfo("انجام شد", f"{it['n']} ردیف به اکسل تجمعی در ریپو {it['repo']} اضافه شد{extra}:\n{it['info']}{it['local_note']}", parent=self)
+                    else:
+                        self.status_var.set(f"✖ ناموفق: {it['info']}")
+                        messagebox.showerror("ناموفق", f"{it['info']}{it['local_note']}", parent=self)
+                elif kind == "repo_open":
+                    if it["ok"]:
+                        header, rows = it["data"]
+                        self._set_table(header, rows, f"اکسل ریپو {it['repo']}/{it['xlsx']}")
+                    else:
+                        self.status_var.set(f"✖ ناموفق: {it['data']}")
+                        messagebox.showerror("ناموفق", it["data"], parent=self)
+                elif kind == "repo_replace":
+                    if it["ok"]:
+                        self.status_var.set(f"✔ اکسل ریپو با جدول ({it['n']} ردیف) جایگزین شد: {it['info']}")
+                        messagebox.showinfo("انجام شد", f"{it['xlsx']} در ریپو با جدول ({it['n']} ردیف) جایگزین شد:\n{it['info']}", parent=self)
+                    else:
+                        self.status_var.set(f"✖ ناموفق: {it['info']}")
+                        messagebox.showerror("ناموفق", it["info"], parent=self)
         except queue.Empty:
             pass
         self.after(150, self._poll)
@@ -4018,6 +4405,9 @@ class PanelApp(tk.Tk):
         self.login_sessions = {}        # account id -> LoginSession
         self.login_status = {}          # account id -> متن ستون «ورود»
         self._info_cache = {}           # account id -> (کلید، مشخصات سفارش)
+        self.broker_login_urls = {}     # کارگزار -> آدرس صفحه‌ی ورودِ پیش‌فرض (از آخرین ویرایش دستی)
+        self._muted = False             # ۵ثانیه مانده به شروع: گوش‌دادن به پروفایل‌ها قطع است
+        self._listen_job = None
         self.phase = "idle"             # idle / waiting / sending / test / done / stopped (برای شمارش معکوس)
         self.phase_start_ts = None
         self._cd_job = None
@@ -4348,6 +4738,44 @@ class PanelApp(tk.Tk):
     def _run_active(self):
         return bool(self.workers) and any(w.is_alive() for w in self.workers)
 
+    def _propagate_login_url(self, acc):
+        """آدرس ورودِ دستی‌شده برای یک حساب ← پیش‌فرض همه‌ی حساب‌های همان کارگزار
+        (حساب‌هایی که آدرس خالی یا همان آدرسِ پیش‌فرضِ قبلی دارند به‌روز می‌شوند؛ آدرس اختصاصیِ بقیه حفظ می‌شود)."""
+        url = (acc.get("login_url") or "").strip()
+        broker = acc.get("broker")
+        if not url or not broker:
+            return
+        old = self.broker_login_urls.get(broker, "")
+        if url == old:
+            return
+        self.broker_login_urls[broker] = url
+        n = 0
+        for a in self.accounts:
+            if a.get("id") == acc.get("id") or a.get("broker") != broker:
+                continue
+            cur = (a.get("login_url") or "").strip()
+            if not cur or cur == old:
+                a["login_url"] = url
+                n += 1
+        label = BROKERS.get(broker, {}).get("label", broker)
+        self._append_log(f"--- آدرس ورود «{label}» پیش‌فرض شد (روی {n} حساب دیگر اعمال شد) ---")
+        self._queue_settings_save()
+
+    def _mute_sessions(self):
+        """۵ثانیه مانده به شروع اولین درخواست: گوش‌دادن همه‌ی پروفایل‌ها قطع می‌شود (کروم‌ها باز می‌مانند)."""
+        self._listen_job = None
+        self._muted = True
+        for sess in list(self.login_sessions.values()):
+            sess.mute.set()
+
+    def _cancel_listen_job(self):
+        if self._listen_job is not None:
+            try:
+                self.after_cancel(self._listen_job)
+            except tk.TclError:
+                pass
+            self._listen_job = None
+
     def _order_info(self, acc):
         """نماد / حجم / قیمت / تاریخ توکن این حساب (از هدر ذخیره‌شده؛ با کش)."""
         hdr = acc.get("header", "")
@@ -4553,6 +4981,7 @@ class PanelApp(tk.Tk):
         self.wait_window(dlg)
         if dlg.result:
             self.accounts.append(dlg.result)
+            self._propagate_login_url(dlg.result)
             save_accounts(self.accounts)
             self._refresh_table()
 
@@ -4565,6 +4994,7 @@ class PanelApp(tk.Tk):
         self.wait_window(dlg)
         if dlg.result:
             self.accounts[idx] = dlg.result
+            self._propagate_login_url(dlg.result)
             save_accounts(self.accounts)
             self._refresh_table()
 
@@ -4598,6 +5028,9 @@ class PanelApp(tk.Tk):
         if sess is not None and sess.is_alive():
             messagebox.showinfo("راهنما", "پروفایل کروم این حساب هم‌اکنون باز است.")
             return
+        if self._muted or self.phase in ("sending", "test"):
+            messagebox.showinfo("راهنما", "نزدیک شروع ارسال (۵ ثانیه قبل از آن تا پایان اجرا) باز کردن پروفایل جدید غیرفعال است.")
+            return
         if websocket is None:
             messagebox.showerror("خطا", "کتابخانه‌ی websocket-client نصب نیست.\nدر ترمینال بزنید:\n\npip install websocket-client")
             return
@@ -4605,7 +5038,10 @@ class PanelApp(tk.Tk):
         if not chrome:
             messagebox.showerror("خطا", "گوگل کروم پیدا نشد.\nمسیر chrome.exe را در متغیر محیطی CHROME_PATH قرار دهید.")
             return
-        sess = LoginSession(dict(acc), chrome, self.ui_queue)
+        snap = dict(acc)
+        if not (snap.get("login_url") or "").strip():
+            snap["login_url"] = self.broker_login_urls.get(acc.get("broker"), "")
+        sess = LoginSession(snap, chrome, self.ui_queue)
         self.login_sessions[acc_id] = sess
         self.login_status[acc_id] = "⏳ در حال باز شدن…"
         self._refresh_table()
@@ -4673,7 +5109,8 @@ class PanelApp(tk.Tk):
                     if obj is not None:
                         got = _info_from_objs([obj])
                         for acc in self.accounts:
-                            if acc.get("id") == acc_id and isinstance(acc.get("capture_meta"), dict):
+                            if (acc.get("id") == acc_id and isinstance(acc.get("capture_meta"), dict)
+                                    and acc["capture_meta"].get("hdr") == item[3]):   # فقط پاسخِ همان آخرین سفارش
                                 for k in ("symbol", "volume", "price"):
                                     if got[k]:
                                         acc["capture_meta"][k] = got[k]
@@ -4774,9 +5211,16 @@ class PanelApp(tk.Tk):
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self._cancel_countdown()
+        self._cancel_listen_job()
+        self._muted = False
         self.phase = "waiting"
         self.phase_start_ts = min(p["start_ts"] for _a, p in plans)
         self._countdown_step()
+        delay = (self.phase_start_ts - 5.0) - time.time()
+        if delay <= 0:
+            self._mute_sessions()
+        else:
+            self._listen_job = self.after(int(delay * 1000), self._mute_sessions)
 
     def _start_test(self):
         if self.workers and any(w.is_alive() for w in self.workers):
@@ -4820,8 +5264,10 @@ class PanelApp(tk.Tk):
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self._cancel_countdown()
+        self._cancel_listen_job()
         self.phase = "test"
         self._set_countdown("تست فوری", "TEST")
+        self._mute_sessions()
         self._remember_run("test", {a["id"]: {"trigger_ts": None, "count": count, "interval_ms": interval_ms}
                                     for a in enabled}, "")
         self._append_log(
@@ -4879,6 +5325,8 @@ class PanelApp(tk.Tk):
         self.stop_btn.config(state="disabled")
         self.start_btn.config(state="normal")
         self._cancel_countdown()
+        self._cancel_listen_job()
+        self._muted = False
         self.phase = "stopped"
         self._set_countdown("متوقف شد", "--:--:--")
 
@@ -4892,6 +5340,8 @@ class PanelApp(tk.Tk):
             gc.enable()
             if self.phase in ("waiting", "sending", "test"):
                 self._cancel_countdown()
+                self._cancel_listen_job()
+                self._muted = False
                 self.phase = "idle"
                 self._set_countdown("آماده", "--:--:--")
             self._save_last_state()   # آخرین لاگ‌ها بعد از پایان اجرا ذخیره می‌شود
@@ -4913,6 +5363,7 @@ class PanelApp(tk.Tk):
             "test_count": self.test_count_var.get(),
             "test_interval": self.test_interval_var.get(),
             "geometry": geo,
+            "broker_login_urls": dict(getattr(self, "broker_login_urls", {})),
             "migrations": dict(getattr(self, "_migrations", {})),
         }
 
@@ -4925,6 +5376,8 @@ class PanelApp(tk.Tk):
             self.test_count_var.set(str(st["test_count"]))
         if st.get("test_interval"):
             self.test_interval_var.set(str(st["test_interval"]))
+        if isinstance(st.get("broker_login_urls"), dict):
+            self.broker_login_urls = {str(k): str(v) for k, v in st["broker_login_urls"].items() if v}
         geo = st.get("geometry") if with_geometry else None
         if isinstance(geo, str):
             m = re.fullmatch(r"(\d+)x(\d+)(?:\+(-?\d+)\+(-?\d+))?", geo)
@@ -4998,7 +5451,7 @@ class PanelApp(tk.Tk):
             s.cancel.set()
         for s in sessions:
             s.join(timeout=2)   # کروم‌های باز دست‌نخورده می‌مانند؛ فقط اتصال دیباگ قطع می‌شود
-        for job in (getattr(self, "_drain_job", None), self._cd_job, self._settings_job):
+        for job in (getattr(self, "_drain_job", None), self._cd_job, self._listen_job, self._settings_job):
             if job is not None:
                 try:
                     self.after_cancel(job)
