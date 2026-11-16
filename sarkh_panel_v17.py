@@ -51,6 +51,7 @@ import copy
 import csv
 import gc
 import gzip
+import hashlib
 import http.client
 import http.cookiejar
 import json
@@ -1645,12 +1646,15 @@ GUIDE_LOGIN_TEXT = """ورود خودکار و ثبت خودکار هدر سفا
    فیلد «هدر» را می‌توانی خالی بگذاری.
 ۲. روی خانه‌ی «🔑 ورود» همان حساب دابل‌کلیک کن. یک کروم با پروفایل مجزای همان حساب باز می‌شود و
    یوزرنیم/پسورد خودکار در فرم گذاشته می‌شود (دکمه‌ی ورود و کپچا را خودت می‌زنی).
-۳. سفارش را بفرست. پنل اولین درخواست POST را که آدرسش شامل «کلیدواژه‌ی آدرس سفارش» (پیش‌فرض order)
-   باشد با همه‌ی هدرها، کوکی‌ها و توکن در فیلد «هدر» ذخیره می‌کند و کروم را بدون خروج از حساب می‌بندد.
-۴. وضعیت هر مرحله در همان خانه‌ی «ورود» نوشته می‌شود. برای حساب بعدی همین مراحل را تکرار کن.
+۳. سفارش را بفرست. پنل اولین درخواست POST را که آدرسش شامل «کلیدواژه‌ی آدرس سفارش» (پیش‌فرض order) باشد
+   و بدنه‌اش شبیه سفارش باشد (حجم + قیمت/نماد) با همه‌ی هدرها، کوکی‌ها و توکن در فیلد «هدر» ذخیره می‌کند.
+   POSTهایی که سفارش نیستند نادیده گرفته می‌شوند. کروم را پنل نمی‌بندد؛ بعد از ثبت خودت ببندش (بدون logout).
+۴. وضعیت هر مرحله در خانه‌ی «ورود» نوشته می‌شود و نماد (نام فارسی اگر در درخواست/پاسخ باشد)، حجم، قیمت و
+   تاریخ توکن (ثبت از کروم + انقضای JWT) در جدول نمایش داده می‌شود. برای حساب بعدی همین مراحل را تکرار کن.
 نیازمندی: pip install websocket-client و نصب بودن گوگل کروم (مسیر دلخواه: متغیر محیطی CHROME_PATH).
-حساب فعال‌شده خودکار به ردیف ۱ می‌رود و غیرفعال‌ها پایین می‌مانند. وقفه/پیش‌گرمیِ ذخیره‌شده‌ی هر حساب با
-جابه‌جایی ردیف عوض نمی‌شود؛ اگر پیش‌فرض ردیفی می‌خواهی دکمه‌ی «🔢 اعمال پیش‌فرض ردیفی» را بزن.
+کنار شماره‌ی ردیف دو فلش هست: ▲ = رفتن به ردیف ۱ ، ▼ = رفتن به ردیف آخر. با هر تغییر ترتیب (فلش، درگ، حذف)،
+وقفه (600+10×ردیف) و پیش‌گرمی (400+10×ردیف) حساب‌هایی که ردیفشان عوض شده خودکار به‌روز می‌شود.
+شمارش معکوس بالای پنل تا ۱ ثانیه مانده به شروع کار می‌کند، بعد «یا علی» می‌نویسد و دیگر چیزی به‌روز نمی‌شود.
 پسورد ورود در accounts.json و کوکی‌ها در chrome_profiles/ می‌مانند؛ هیچ‌کدام را در گیت‌هاب نگذار.
 """
 
@@ -2170,8 +2174,146 @@ class CDPConnection:
             pass
 
 
+# ---------------------------------------------------------------------------
+# استخراج مشخصات سفارش (نماد فارسی / حجم / قیمت / تاریخ توکن) برای نمایش در جدول پنل
+# ---------------------------------------------------------------------------
+_PERSIAN_RE = re.compile(r"[\u0600-\u06FF]")
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]*")
+_PRICE_KEYS = ("price", "orderprice", "limitprice", "unitprice", "rate")
+_SYMBOL_KEY_HINTS = ("symbol", "instrument", "namad", "نماد", "stock", "security")
+
+
+def header_hash(text):
+    return hashlib.md5((text or "").strip().encode("utf-8", "replace")).hexdigest()
+
+
+def _iter_kv(obj, depth=0):
+    if depth > 6:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k, v
+            if isinstance(v, (dict, list)):
+                yield from _iter_kv(v, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            if isinstance(v, (dict, list)):
+                yield from _iter_kv(v, depth + 1)
+
+
+def _fmt_thousands(v):
+    try:
+        f = float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return str(v)
+    return f"{int(f):,}" if f == int(f) else str(f)
+
+
+def _jalali_stamp(ts):
+    dt = datetime.fromtimestamp(float(ts))
+    _jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
+    return f"{jm:02d}/{jd:02d} {dt:%H:%M}"
+
+
+def _info_from_objs(objs):
+    info = {"symbol": "", "volume": "", "price": ""}
+    persian, plain = [], ""
+    for obj in objs:
+        for k, v in _iter_kv(obj):
+            kl = str(k).lower()
+            if isinstance(v, str) and _PERSIAN_RE.search(v) and any(h in kl for h in _SYMBOL_KEY_HINTS):
+                persian.append(v.strip())
+            if (not info["price"] and kl in _PRICE_KEYS and not isinstance(v, bool)
+                    and isinstance(v, (int, float, str)) and re.fullmatch(r"\s*[\d,]+(\.\d+)?\s*", str(v))):
+                info["price"] = _fmt_thousands(v)
+        if not info["volume"]:
+            paths = find_volume_paths(obj, AUTO_VOLUME_KEYS)
+            if paths:
+                info["volume"] = _fmt_thousands(_get_path(obj, paths[0]))
+        if not plain:
+            plain = _find_symbol_in(obj)
+    info["symbol"] = persian[0] if persian else plain
+    return info
+
+
+def _jwt_times(texts):
+    for t in texts:
+        m = _JWT_RE.search(t or "")
+        if not m:
+            continue
+        try:
+            seg = m.group(1)
+            payload = json.loads(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)))
+            return payload.get("iat"), payload.get("exp")
+        except Exception:
+            continue
+    return None, None
+
+
+def extract_order_info(header_text, meta=None):
+    """نماد / حجم / قیمت از بدنه‌ی curl ذخیره‌شده + تاریخ توکن (ثبت از کروم، صدور/انقضای JWT)."""
+    info = {"symbol": "", "volume": "", "price": "", "token": ""}
+    parsed = None
+    if (header_text or "").strip():
+        try:
+            parsed = parse_captured_input(header_text)
+        except Exception:
+            parsed = None
+    texts = []
+    if parsed:
+        objs = []
+        body = parsed.get("json_body")
+        if isinstance(body, (dict, list)):
+            objs.append(body)
+        data = parsed.get("data")
+        if isinstance(data, str) and "=" in data:
+            objs.append(dict(urllib.parse.parse_qsl(data)))
+        info.update(_info_from_objs(objs))
+        texts = list((parsed.get("headers") or {}).values()) + list((parsed.get("cookies") or {}).values())
+    meta_ok = isinstance(meta, dict) and meta.get("hdr") == header_hash(header_text)
+    if meta_ok:
+        # پاسخ سرور به سفارش (اگر نام فارسی نماد را داشت) فقط جای خالی/غیرفارسی را پر می‌کند
+        ms = meta.get("symbol") or ""
+        if ms and (not info["symbol"] or (_PERSIAN_RE.search(ms) and not _PERSIAN_RE.search(info["symbol"]))):
+            info["symbol"] = ms
+        for k in ("volume", "price"):
+            if not info[k] and meta.get(k):
+                info[k] = meta[k]
+    iat, exp = _jwt_times(texts)
+    parts = []
+    try:
+        if meta_ok and meta.get("at"):
+            parts.append("ثبت " + _jalali_stamp(meta["at"]))
+        elif iat:
+            parts.append("صدور " + _jalali_stamp(iat))
+        if exp:
+            parts.append("انقضا " + _jalali_stamp(exp))
+    except (TypeError, ValueError, OverflowError, OSError):
+        pass
+    info["token"] = " | ".join(parts)
+    return info
+
+
+def looks_like_order(body_text):
+    """آیا بدنه‌ی این POST شبیه یک سفارش است؟ (حجم + قیمت/نماد)"""
+    if not body_text:
+        return False
+    try:
+        obj = json.loads(body_text)
+    except (ValueError, TypeError):
+        obj = dict(urllib.parse.parse_qsl(body_text)) if "=" in body_text else None
+    if obj is None:
+        return False
+    keys = [str(k).lower() for k, _v in _iter_kv(obj)]
+    has_vol = any(k in AUTO_VOLUME_KEYS or "volume" in k or "quantity" in k for k in keys)
+    has_price = any("price" in k for k in keys)
+    has_sym = any(h in k for k in keys for h in _SYMBOL_KEY_HINTS)
+    return has_vol and (has_price or has_sym)
+
+
 class LoginSession(threading.Thread):
-    """One Chrome profile for one account: auto-fill login, capture the order."""
+    """یک پروفایل کروم برای یک حساب: پر کردن خودکار ورود + ثبت درخواست سفارش.
+    بستن کروم دستی است؛ پنل هیچ‌وقت کروم را خودش نمی‌بندد."""
 
     def __init__(self, account, chrome_path, ui_queue):
         super().__init__(daemon=True)
@@ -2181,6 +2323,8 @@ class LoginSession(threading.Thread):
         self.cancel = threading.Event()
         self.proc = None
         self.conn = None
+        self.captured = False
+        self.no_auth = False
 
     def _status(self, text):
         self.ui_queue.put(("status", self.account["id"], text))
@@ -2189,11 +2333,13 @@ class LoginSession(threading.Thread):
         try:
             self._run()
         except ConnectionClosed:
-            self._status("⚠ پروفایل بسته شد، سفارشی ثبت نشد")
+            if not self.captured:
+                self._status("⚠ پروفایل بسته شد، سفارشی ثبت نشد")
         except Exception as e:
             self._status(f"❌ {e}")
         finally:
-            self._shutdown_chrome()
+            if self.conn:
+                self.conn.close()
             self.ui_queue.put(("ended", self.account["id"]))
 
     def _wait_for_devtools(self, port):
@@ -2244,8 +2390,13 @@ class LoginSession(threading.Thread):
         attached_targets = set()
         attach_cmds = {}   # command id -> targetId
         post_cmds = {}     # command id -> request key
-        reqs = {}          # (sessionId, requestId) -> captured candidate
+        body_cmds = {}     # command id -> True (getResponseBody)
+        reqs = {}          # (sessionId, requestId) -> candidate POST
         extras = {}        # (sessionId, requestId) -> full headers incl. cookies
+        seen_ignored = set()
+        resp_key = None
+        resp_deadline = 0.0
+        finished = set()   # درخواست‌هایی که پاسخشان کامل شده (ممکن است قبل از ثبتِ ما برسد)
 
         while not self.cancel.is_set():
             msg = self.conn.recv()
@@ -2262,6 +2413,18 @@ class LoginSession(threading.Thread):
                         if key in reqs:
                             reqs[key]["postData"] = (msg.get("result") or {}).get("postData", "")
                             reqs[key]["post_done"] = True
+                    elif cid in body_cmds:
+                        body_cmds.pop(cid)
+                        res = msg.get("result") or {}
+                        text = res.get("body", "") or ""
+                        if res.get("base64Encoded"):
+                            try:
+                                text = base64.b64decode(text).decode("utf-8", "replace")
+                            except Exception:
+                                text = ""
+                        if text:
+                            self.ui_queue.put(("response", acc["id"], text[:50000]))
+                        break
                 else:
                     method = msg.get("method")
                     params = msg.get("params") or {}
@@ -2273,7 +2436,7 @@ class LoginSession(threading.Thread):
                             attached_targets.add(tid)
                             cid = self.conn.send("Target.attachToTarget", {"targetId": tid, "flatten": True})
                             attach_cmds[cid] = tid
-                    elif method == "Network.requestWillBeSent" and sid:
+                    elif method == "Network.requestWillBeSent" and sid and not self.captured:
                         req = params.get("request") or {}
                         if (req.get("method") or "").upper() == "POST" and keyword in (req.get("url") or "").lower():
                             key = (sid, params.get("requestId"))
@@ -2289,18 +2452,54 @@ class LoginSession(threading.Thread):
                                 cid = self.conn.send("Network.getRequestPostData",
                                                      {"requestId": params.get("requestId")}, sid)
                                 post_cmds[cid] = key
-                    elif method == "Network.requestWillBeSentExtraInfo" and sid:
+                    elif method == "Network.requestWillBeSentExtraInfo" and sid and not self.captured:
                         extras[(sid, params.get("requestId"))] = params.get("headers") or {}
                         if len(extras) > 3000:
                             for k in list(extras)[:1500]:
                                 extras.pop(k, None)
+                    elif method == "Network.loadingFinished" and sid:
+                        fkey = (sid, params.get("requestId"))
+                        if resp_key and fkey == resp_key:
+                            cid = self.conn.send("Network.getResponseBody", {"requestId": resp_key[1]}, sid)
+                            body_cmds[cid] = True
+                        elif not self.captured and fkey in reqs:
+                            finished.add(fkey)
 
-            for key, entry in list(reqs.items()):
-                if entry["post_done"] and (key in extras or time.time() - entry["seen"] > 1.5):
-                    self._capture(entry, extras.get(key, {}))
-                    return
+            if not self.captured:
+                for key, entry in list(reqs.items()):
+                    if entry["post_done"] and (key in extras or time.time() - entry["seen"] > 1.5):
+                        reqs.pop(key, None)
+                        if not looks_like_order(entry.get("postData") or ""):
+                            tag = entry["url"].split("?")[0][-40:]
+                            if tag not in seen_ignored:
+                                seen_ignored.add(tag)
+                                self._status(f"👀 POST دیده شد ولی سفارش نبود: …{tag}")
+                            continue
+                        self._capture(entry, extras.get(key, {}))
+                        self.captured = True
+                        resp_key = key
+                        resp_deadline = time.time() + 6
+                        if key in finished:   # پاسخ از قبل رسیده بود
+                            cid = self.conn.send("Network.getResponseBody", {"requestId": key[1]}, key[0])
+                            body_cmds[cid] = True
+                        break
+            elif time.time() > resp_deadline:
+                break
 
-        self._status("⏹ لغو شد")
+        if not self.captured:
+            self._status("⏹ لغو شد")
+            return
+
+        # سفارش ثبت شد: اتصال دیباگ را قطع می‌کنیم (بار اضافه روی سیستم نماند) ولی کروم را نمی‌بندیم.
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+        self._status("⚠ ثبت شد ولی کوکی/توکنی در درخواست نبود — کروم را خودتان ببندید" if self.no_auth
+                     else "✔ سفارش ثبت شد — کروم را خودتان ببندید")
+        while self.proc.poll() is None and not self.cancel.is_set():
+            time.sleep(0.5)
+        if self.proc.poll() is not None:
+            self._status("✔ ثبت شد (کروم بسته شد)")
 
     def _capture(self, entry, extra):
         merged = {}
@@ -2311,29 +2510,8 @@ class LoginSession(threading.Thread):
                 merged[k.lower()] = (k, v)
         headers = {orig: val for low, (orig, val) in merged.items() if low not in SKIP_CAPTURE_HEADERS}
         curl = build_curl(entry["url"], entry["method"], headers, entry.get("postData") or "")
-        self.ui_queue.put(("captured", self.account["id"], curl))
-        if "cookie" in merged or "authorization" in merged:
-            self._status("✔ سفارش ثبت شد (پروفایل بسته شد)")
-        else:
-            self._status("⚠ ثبت شد ولی کوکی/توکنی در درخواست نبود")
-
-    def _shutdown_chrome(self):
-        try:
-            if self.conn:
-                self.conn.send("Browser.close")
-        except Exception:
-            pass
-        if self.proc is not None:
-            try:
-                self.proc.wait(timeout=6)
-            except Exception:
-                try:
-                    self.proc.terminate()
-                except Exception:
-                    pass
-        if self.conn:
-            self.conn.close()
-
+        self.no_auth = not ("cookie" in merged or "authorization" in merged)
+        self.ui_queue.put(("captured", self.account["id"], curl, time.time()))
 
 
 class AccountDialog(tk.Toplevel):
@@ -2565,6 +2743,8 @@ class AccountDialog(tk.Toplevel):
             "order_keyword": self.order_kw_var.get().strip() or "order",
             "order": order,
         }
+        if self.account.get("capture_meta"):
+            self.result["capture_meta"] = self.account["capture_meta"]
         self.destroy()
 
 
@@ -3808,8 +3988,8 @@ class PanelApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("پنل چند حسابی ارسال سفارش — نورآی")
-        self.geometry("1000x820")
-        self.minsize(900, 700)
+        self.geometry("1280x820")
+        self.minsize(1100, 700)
 
         # لوگوی جاسازی‌شده (base64) — یک نسخه‌ی کامل برای آیکن پنجره، و یک
         # نسخه‌ی کوچک‌شده (subsample) برای نوار عنوان بالای پنل.
@@ -3833,15 +4013,14 @@ class PanelApp(tk.Tk):
             if migrated_debug:
                 save_accounts(self.accounts)
             self._migrations["v15_debug_volume"] = True
-        if self._normalize_order():     # فعال‌ها بالا، غیرفعال‌ها پایین
-            save_accounts(self.accounts)
         self.log_queue = queue.Queue()
         self.ui_queue = queue.Queue()   # پیام‌های ورود خودکار (وضعیت / هدر ثبت‌شده)
         self.login_sessions = {}        # account id -> LoginSession
         self.login_status = {}          # account id -> متن ستون «ورود»
+        self._info_cache = {}           # account id -> (کلید، مشخصات سفارش)
         self.phase = "idle"             # idle / waiting / sending / test / done / stopped (برای شمارش معکوس)
         self.phase_start_ts = None
-        self.phase_end_ts = None
+        self._cd_job = None
         self.stop_event = threading.Event()
         self.workers = []
         self.logs_by_account = {acc["id"]: [] for acc in self.accounts}
@@ -3879,7 +4058,6 @@ class PanelApp(tk.Tk):
         self._save_settings_now()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._drain_job = self.after(150, self._drain_log)
-        self._tick_job = self.after(100, self._tick)
 
     def _build_ui(self):
         header = ttk.Frame(self)
@@ -3944,10 +4122,12 @@ class PanelApp(tk.Tk):
         ttk.Button(toolbar, text="📋 لاگ کل پنل", command=self._open_full_log).pack(side="left", padx=2)
         ttk.Button(toolbar, text="🔢 اعمال پیش‌فرض ردیفی", command=self._apply_row_defaults).pack(side="left", padx=2)
 
-        columns = ("row", "name", "login", "enabled", "broker", "interval", "trigger", "count", "log")
-        headers = ["ردیف", "نام کاربری", "ورود", "فعال", "کارگزاری", "وقفه (ms)", "تریگر", "تعداد", "لاگ"]
-        col_widths = {"row": 50, "name": 150, "login": 190, "enabled": 60, "broker": 110, "interval": 80,
-                      "trigger": 80, "count": 60, "log": 110}
+        columns = ("row", "name", "login", "enabled", "broker", "symbol", "volume", "price", "token",
+                   "interval", "trigger", "count", "log")
+        headers = ["ردیف", "نام کاربری", "ورود", "فعال", "کارگزاری", "نماد", "حجم", "قیمت", "تاریخ توکن",
+                   "وقفه (ms)", "تریگر", "تعداد", "لاگ"]
+        col_widths = {"row": 85, "name": 110, "login": 170, "enabled": 50, "broker": 80, "symbol": 120,
+                      "volume": 75, "price": 85, "token": 210, "interval": 70, "trigger": 60, "count": 50, "log": 90}
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=20)
@@ -3969,9 +4149,9 @@ class PanelApp(tk.Tk):
 
         ttk.Label(
             self,
-            text="نکته: روی «🔑 ورود» دابل‌کلیک کنید تا پروفایل کروم همان حساب باز شود و هدر سفارش خودکار ثبت شود. "
-                 "روی «فعال» کلیک کنید تا فعال/غیرفعال شود (حساب فعال می‌رود ردیف ۱، غیرفعال‌ها پایین می‌مانند)؛ "
-                 "روی «وقفه/تریگر/تعداد» کلیک کنید تا مقدارش را تغییر دهید (Enter = ثبت).",
+            text="نکته: روی «🔑 ورود» دابل‌کلیک کنید تا پروفایل کروم همان حساب باز شود؛ بعد از فرستادن سفارش، هدر خودکار ثبت می‌شود "
+                 "(کروم را خودتان ببندید). ▲ = رفتن به ردیف ۱، ▼ = رفتن به ردیف آخر (وقفه و پیش‌گرمی با ردیف خودکار به‌روز می‌شود). "
+                 "روی «فعال» کلیک کنید تا فعال/غیرفعال شود؛ روی «وقفه/تریگر/تعداد» کلیک کنید تا تغییرش دهید (Enter = ثبت).",
             foreground="#666", wraplength=960, justify="left",
         ).pack(fill="x", padx=6, pady=(0, 4), before=tree_frame)
 
@@ -3980,12 +4160,17 @@ class PanelApp(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         for idx, acc in enumerate(self.accounts):
             order = acc.get("order", {})
+            info = self._order_info(acc)
             self.tree.insert("", "end", iid=str(idx), values=(
-                idx + 1,
+                f"▲  {idx + 1}  ▼",
                 acc.get("name", ""),
                 self.login_status.get(acc.get("id"), "🔑 ورود"),
                 "✔" if acc.get("enabled") else "—",
                 BROKERS.get(acc.get("broker"), {}).get("label", acc.get("broker")),
+                info["symbol"] or "—",
+                info["volume"] or "—",
+                info["price"] or "—",
+                info["token"] or "—",
                 fmt_num(order.get("interval_ms", "")),
                 order.get("trigger", DEFAULT_ORDER["trigger"]),
                 order.get("count", DEFAULT_ORDER["count"]),
@@ -4043,14 +4228,17 @@ class PanelApp(tk.Tk):
             # ترتیب بصری جدول تغییر کرده — همان ترتیب را در self.accounts هم
             # اعمال و ذخیره می‌کنیم (هر iid همچنان همان حساب همیشگی‌اش را
             # نشان می‌دهد، فقط جایگاهش در لیست عوض شده).
+            if self._run_active():
+                self._refresh_table()
+                messagebox.showerror("خطا", "تا پایان اجرای فعلی ترتیب ردیف‌ها قابل تغییر نیست.")
+                return
             try:
                 new_order = [self.accounts[int(iid)] for iid in self.tree.get_children("")]
             except (ValueError, IndexError):
                 return
+            before = {a["id"]: i for i, a in enumerate(self.accounts)}
             self.accounts = new_order
-            self._normalize_order()   # فعال‌ها همیشه بالا می‌مانند
-            save_accounts(self.accounts)
-            self._refresh_table()
+            self._after_reorder(before)
             return
 
         # یک کلیک ساده (بدون درگ): اگر روی ستون «فعال/غیرفعال» بود، تغییرش بده.
@@ -4063,7 +4251,19 @@ class PanelApp(tk.Tk):
         except ValueError:
             return
         columns = self.tree["columns"]
-        if 0 <= col_index < len(columns) and columns[col_index] == "enabled":
+        if 0 <= col_index < len(columns) and columns[col_index] == "row":
+            try:
+                idx = int(dragged_iid)
+            except ValueError:
+                return
+            bbox = self.tree.bbox(dragged_iid, "#%d" % (col_index + 1))
+            if bbox:
+                rel = (event.x - bbox[0]) / float(max(1, bbox[2]))
+                if rel < 0.34:
+                    self._move_account(idx, "top")
+                elif rel > 0.66:
+                    self._move_account(idx, "bottom")
+        elif 0 <= col_index < len(columns) and columns[col_index] == "enabled":
             try:
                 idx = int(dragged_iid)
             except ValueError:
@@ -4145,33 +4345,62 @@ class PanelApp(tk.Tk):
         except tk.TclError:
             pass
 
-    def _normalize_order(self):
-        """فعال‌ها اول، غیرفعال‌ها آخر (پایدار). اگر ترتیب عوض شد True برمی‌گرداند."""
-        new = [a for a in self.accounts if a.get("enabled")] + [a for a in self.accounts if not a.get("enabled")]
-        changed = any(a is not b for a, b in zip(new, self.accounts))
-        self.accounts = new
-        return changed
+    def _run_active(self):
+        return bool(self.workers) and any(w.is_alive() for w in self.workers)
 
-    def _apply_enabled_change(self, acc, enabled):
-        """حساب تازه‌فعال ← ردیف ۱؛ حساب تازه‌غیرفعال ← اولین ردیف بعد از فعال‌ها."""
-        self.accounts = [a for a in self.accounts if a is not acc]
-        acc["enabled"] = enabled
-        if enabled:
-            self.accounts.insert(0, acc)
-        else:
-            n_enabled = sum(1 for a in self.accounts if a.get("enabled"))
-            self.accounts.insert(n_enabled, acc)
+    def _order_info(self, acc):
+        """نماد / حجم / قیمت / تاریخ توکن این حساب (از هدر ذخیره‌شده؛ با کش)."""
+        hdr = acc.get("header", "")
+        meta = acc.get("capture_meta")
+        key = (hdr, json.dumps(meta, sort_keys=True, default=str) if meta else "")
+        ent = self._info_cache.get(acc.get("id"))
+        if ent and ent[0] == key:
+            return ent[1]
+        info = extract_order_info(hdr, meta)
+        self._info_cache[acc.get("id")] = (key, info)
+        return info
+
+    def _after_reorder(self, before):
+        """بعد از هر تغییر ترتیب: وقفه و پیش‌گرمیِ حساب‌هایی که ردیفشان عوض شده خودکار با ردیف جدید به‌روز می‌شود."""
+        changed = 0
+        for i, a in enumerate(self.accounts):
+            if before.get(a["id"]) != i:
+                order = a.setdefault("order", {})
+                order["interval_ms"] = float(row_default_interval(i + 1))
+                order["warm_lead_ms"] = str(row_default_lead(i + 1))
+                changed += 1
+        save_accounts(self.accounts)
+        self._refresh_table()
+        if changed:
+            self._append_log(f"--- ترتیب ردیف‌ها تغییر کرد؛ وقفه و پیش‌گرمی {changed} حساب با ردیف جدید به‌روز شد ---")
+
+    def _move_account(self, idx, where):
+        """▲ = ردیف ۱ ، ▼ = ردیف آخر."""
+        if self._run_active():
+            messagebox.showerror("خطا", "تا پایان اجرای فعلی ترتیب ردیف‌ها قابل تغییر نیست.")
+            return
+        self._end_cell_edit(commit=True)
+        n = len(self.accounts)
+        if not (0 <= idx < n) or (where == "top" and idx == 0) or (where == "bottom" and idx == n - 1):
+            return
+        before = {a["id"]: i for i, a in enumerate(self.accounts)}
+        acc = self.accounts.pop(idx)
+        self.accounts.insert(0 if where == "top" else n - 1, acc)
+        self._after_reorder(before)
+        try:
+            self.tree.selection_set(str(self.accounts.index(acc)))
+        except (tk.TclError, ValueError):
+            pass
 
     def _toggle_enabled(self, idx):
         if not (0 <= idx < len(self.accounts)):
             return
-        acc = self.accounts[idx]
-        self._apply_enabled_change(acc, not acc.get("enabled", True))
+        self.accounts[idx]["enabled"] = not self.accounts[idx].get("enabled", True)
         save_accounts(self.accounts)
         self._refresh_table()
         try:
-            self.tree.selection_set(str(self.accounts.index(acc)))
-        except (tk.TclError, ValueError):
+            self.tree.selection_set(str(idx))
+        except tk.TclError:
             pass
 
     def _row_of(self, acc):
@@ -4320,11 +4549,10 @@ class PanelApp(tk.Tk):
         ttk.Button(win, text="بستن", command=win.destroy).pack(pady=(0, 8))
 
     def _add_account(self):
-        dlg = AccountDialog(self, row=1)   # حساب فعال تازه می‌رود ردیف ۱
+        dlg = AccountDialog(self, row=len(self.accounts) + 1)
         self.wait_window(dlg)
         if dlg.result:
             self.accounts.append(dlg.result)
-            self._apply_enabled_change(dlg.result, dlg.result.get("enabled", True))
             save_accounts(self.accounts)
             self._refresh_table()
 
@@ -4333,13 +4561,10 @@ class PanelApp(tk.Tk):
         if idx is None:
             messagebox.showinfo("راهنما", "یک حساب را از جدول انتخاب کنید.")
             return
-        was_enabled = self.accounts[idx].get("enabled", True)
         dlg = AccountDialog(self, account=self.accounts[idx], row=idx + 1)
         self.wait_window(dlg)
         if dlg.result:
             self.accounts[idx] = dlg.result
-            if dlg.result.get("enabled", True) != was_enabled:
-                self._apply_enabled_change(dlg.result, dlg.result.get("enabled", True))
             save_accounts(self.accounts)
             self._refresh_table()
 
@@ -4349,10 +4574,12 @@ class PanelApp(tk.Tk):
             return
         if messagebox.askyesno("حذف", "این حساب حذف شود؟"):
             acc_id = self.accounts[idx].get("id")
+            before = {a["id"]: i for i, a in enumerate(self.accounts)}
             del self.accounts[idx]
-            save_accounts(self.accounts)
+            self._after_reorder(before)   # ردیف‌های پایین‌تر بالا می‌آیند ← وقفه‌شان خودکار به‌روز می‌شود
             self.logs_by_account.pop(acc_id, None)
             self.login_status.pop(acc_id, None)
+            self._info_cache.pop(acc_id, None)
             sess = self.login_sessions.get(acc_id)
             if sess is not None:
                 sess.cancel.set()
@@ -4391,31 +4618,37 @@ class PanelApp(tk.Tk):
         m, sec = divmod(rem, 60)
         return f"{h:02d}:{m:02d}:{sec:02d}"
 
-    def _update_countdown(self):
-        now = time.time()
-        if self.phase == "waiting" and now >= self.phase_start_ts:
-            self.phase = "sending"
-        if self.phase == "waiting":
-            caption, text = "مانده تا شروع ارسال", self._fmt_hms(self.phase_start_ts - now)
-        elif self.phase == "sending":
-            left = self.phase_end_ts - now
-            if left > 0:
-                caption, text = "در حال ارسال — مانده تا پایان آخرین ارسال", self._fmt_hms(left)
-            else:
-                caption, text = "ارسال تمام شد — در انتظار پاسخ‌ها", "00:00:00"
-        elif self.phase == "test":
-            caption, text = "تست در حال اجراست", "TEST"
-        elif self.phase == "done":
-            caption, text = "پایان", "00:00:00"
-        elif self.phase == "stopped":
-            caption, text = "متوقف شد", "--:--:--"
-        else:
-            caption, text = "آماده", "--:--:--"
+    def _set_countdown(self, caption, text):
         self.countdown_caption.config(text=caption)
         self.countdown_label.config(text=text)
 
-    def _tick(self):
-        """هر ۱۰۰ms: پیام‌های ورود خودکار + شمارنده‌ی معکوس."""
+    def _cancel_countdown(self):
+        if self._cd_job is not None:
+            try:
+                self.after_cancel(self._cd_job)
+            except tk.TclError:
+                pass
+            self._cd_job = None
+
+    def _countdown_step(self):
+        """فقط تا ۱ ثانیه مانده به شروع، و فقط روی مرز هر ثانیه اجرا می‌شود (نه یک تایمر پیوسته).
+        با ۱ ثانیه مانده، «یا علی» نمایش داده می‌شود و دیگر هیچ به‌روزرسانی‌ای انجام نمی‌شود."""
+        self._cd_job = None
+        if self.phase != "waiting":
+            return
+        remaining = self.phase_start_ts - time.time()
+        if remaining <= 1.0:
+            self.phase = "sending"
+            self._set_countdown("", "یا علی")
+            return
+        self._set_countdown("مانده تا شروع ارسال", self._fmt_hms(remaining))
+        delay = remaining - math.floor(remaining)
+        if delay < 0.005:
+            delay = 1.0
+        self._cd_job = self.after(int(delay * 1000) + 8, self._countdown_step)
+
+    def _flush_ui_queue(self):
+        """پیام‌های ورود خودکار (کروم)."""
         changed = False
         try:
             while True:
@@ -4428,19 +4661,31 @@ class PanelApp(tk.Tk):
                     for acc in self.accounts:
                         if acc.get("id") == acc_id:
                             acc["header"] = item[2]
+                            acc["capture_meta"] = {"hdr": header_hash(item[2]), "at": item[3]}
                             break
                     save_accounts(self.accounts)
+                    changed = True
+                elif kind == "response":
+                    try:
+                        obj = json.loads(item[2])
+                    except (ValueError, TypeError):
+                        obj = None
+                    if obj is not None:
+                        got = _info_from_objs([obj])
+                        for acc in self.accounts:
+                            if acc.get("id") == acc_id and isinstance(acc.get("capture_meta"), dict):
+                                for k in ("symbol", "volume", "price"):
+                                    if got[k]:
+                                        acc["capture_meta"][k] = got[k]
+                                save_accounts(self.accounts)
+                                changed = True
+                                break
                 elif kind == "ended":
                     self.login_sessions.pop(acc_id, None)
         except queue.Empty:
             pass
         if changed:
             self._refresh_table()
-        try:
-            self._update_countdown()
-        except tk.TclError:
-            return
-        self._tick_job = self.after(100, self._tick)
 
     def _start_all(self):
         if self.workers and any(w.is_alive() for w in self.workers):
@@ -4528,9 +4773,10 @@ class PanelApp(tk.Tk):
             w.start()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
+        self._cancel_countdown()
         self.phase = "waiting"
         self.phase_start_ts = min(p["start_ts"] for _a, p in plans)
-        self.phase_end_ts = max(p["last_ts"] for _a, p in plans)
+        self._countdown_step()
 
     def _start_test(self):
         if self.workers and any(w.is_alive() for w in self.workers):
@@ -4573,7 +4819,9 @@ class PanelApp(tk.Tk):
             w.start()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
+        self._cancel_countdown()
         self.phase = "test"
+        self._set_countdown("تست فوری", "TEST")
         self._remember_run("test", {a["id"]: {"trigger_ts": None, "count": count, "interval_ms": interval_ms}
                                     for a in enabled}, "")
         self._append_log(
@@ -4630,17 +4878,22 @@ class PanelApp(tk.Tk):
         self._append_log("--- درخواست توقف ارسال شد ---")
         self.stop_btn.config(state="disabled")
         self.start_btn.config(state="normal")
+        self._cancel_countdown()
         self.phase = "stopped"
+        self._set_countdown("متوقف شد", "--:--:--")
 
     def _drain_log(self):
         self._flush_queue()
+        self._flush_ui_queue()
         if self.workers and all(not w.is_alive() for w in self.workers):
             self.start_btn.config(state="normal")
             self.stop_btn.config(state="disabled")
             self.workers = []
             gc.enable()
             if self.phase in ("waiting", "sending", "test"):
-                self.phase = "done"
+                self._cancel_countdown()
+                self.phase = "idle"
+                self._set_countdown("آماده", "--:--:--")
             self._save_last_state()   # آخرین لاگ‌ها بعد از پایان اجرا ذخیره می‌شود
         self._drain_job = self.after(150, self._drain_log)
 
@@ -4676,7 +4929,7 @@ class PanelApp(tk.Tk):
         if isinstance(geo, str):
             m = re.fullmatch(r"(\d+)x(\d+)(?:\+(-?\d+)\+(-?\d+))?", geo)
             if m:
-                w, h = max(900, int(m.group(1))), max(760, int(m.group(2)))
+                w, h = max(1100, int(m.group(1))), max(760, int(m.group(2)))
                 sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
                 w, h = min(w, sw), min(h, sh)
                 if m.group(3) is not None and -50 <= int(m.group(3)) <= sw - 100 and -50 <= int(m.group(4)) <= sh - 100:
@@ -4744,8 +4997,8 @@ class PanelApp(tk.Tk):
         for s in sessions:
             s.cancel.set()
         for s in sessions:
-            s.join(timeout=4)
-        for job in (getattr(self, "_drain_job", None), getattr(self, "_tick_job", None), self._settings_job):
+            s.join(timeout=2)   # کروم‌های باز دست‌نخورده می‌مانند؛ فقط اتصال دیباگ قطع می‌شود
+        for job in (getattr(self, "_drain_job", None), self._cd_job, self._settings_job):
             if job is not None:
                 try:
                     self.after_cancel(job)
