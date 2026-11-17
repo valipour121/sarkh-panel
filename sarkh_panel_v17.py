@@ -1721,28 +1721,24 @@ GUIDE_LOGIN_TEXT = """ورود خودکار و ثبت خودکار هدر سفا
 """
 
 
-GUIDE_RESULTS_TEXT = """نتایج روزانه (CSV و اکسل تجمعی) — ورژن ۱۷
-==========================================
+GUIDE_RESULTS_TEXT = """نتایج روزانه (CSV و اکسل تجمعی محلی) — ورژن ۱۷
+=====================================================
 بعد از پایان ارسال‌ها، دکمه‌ی «📊 ساخت CSV نتایج» (بالای پنل) برای هر حساب یک ردیف می‌سازد
-و در یک پنجره‌ی قابل‌ویرایش نشان می‌دهد (روی هر خانه دابل‌کلیک = ویرایش، Enter = ثبت).
+و در یک پنجره‌ی قابل‌ویرایش (صفحه‌ی لاگ نتایج) نشان می‌دهد (روی هر خانه دابل‌کلیک = ویرایش، Enter = ثبت).
 «رتبه» خالی ساخته می‌شود تا دستی پر کنید. «نام نماد» و «سختی نماد» را می‌توانید بالای جدول
-یک‌جا برای همه‌ی ردیف‌ها بنویسید. ستون «جزئیات درخواست‌ها» زمان و نتیجه‌ی تک‌تک درخواست‌هاست.
-CSV امروز در پوشه‌ی results کنار برنامه ذخیره می‌شود.
-دکمه‌ی «افزودن به اکسل تجمعی در ریپو» ردیف‌های همین جدول را به فایل sarkhat_result.xlsx در ریپوی
-پنل اضافه می‌کند (اگر فایل نبود می‌سازد). اگر همان روز را دوباره بفرستید، ردیف‌های قبلیِ همان
-تاریخ جایگزین می‌شوند و تکراری نمی‌ماند. این کار به کتابخانه‌ی openpyxl نیاز دارد:  pip install openpyxl
-کلید (توکن) گیت‌هاب را می‌توانید همان بالای جدول عوض کنید؛ فقط در results_push.json کنار برنامه
-می‌ماند (آن را در گیت‌هاب نگذارید).
+یک‌جا برای همه‌ی ردیف‌ها بنویسید. «زمان ارسال» = زمان واقعیِ ارسال درخواست تریگر. ستون «جزئیات درخواست‌ها»
+زمان و نتیجه‌ی تک‌تک درخواست‌هاست. عنوان ستون‌ها را با درگ می‌توانید جابه‌جا کنید (فقط نمایش).
 
 همه‌ی کارهای اکسل فقط در همین پنجره‌ی «لاگ نتایج» است (پنل اصلی فقط دکمه‌ی CSV دارد):
+• «✅ ذخیره‌ی CSV و افزودن به اکسل محلی»: CSV امروز در پوشه‌ی results کنار برنامه ذخیره می‌شود و ردیف‌ها به
+  اکسل تجمعی sarkhat_result.xlsx (کنار برنامه) اضافه می‌شوند. اگر همان روز را دوباره بفرستید، ردیف‌های قبلیِ همان
+  تاریخ جایگزین می‌شوند. به کتابخانه‌ی openpyxl نیاز دارد:  pip install openpyxl
 • فایل محلی: «بارگذاری CSV/اکسل از دیسک» (یک فایل ذخیره‌شده را در جدول باز می‌کند تا ویرایشش کنی)،
   «ذخیره‌ی CSV» و «ذخیره‌ی جدول به‌عنوان…» (CSV یا اکسل، هر جا که خواستی).
-• اکسل تجمعی محلی (کنار برنامه، همان نام sarkhat_result.xlsx): «باز کردن برای ویرایش»،
-  «افزودن جدول» (ردیف‌های هم‌تاریخ جایگزین می‌شوند) و «جایگزینی کل اکسل محلی با جدول».
-• اکسل تجمعی ریپو: «باز کردن اکسل ریپو برای ویرایش»، «افزودن جدول به اکسل ریپو» (همزمان اکسل محلی هم
-  به‌روز می‌شود) و «جایگزینی کل اکسل ریپو با جدول» — برای حذف یا اصلاح ردیف‌های قدیمیِ ریپو:
-  اکسل ریپو را باز کن، ردیف‌ها را حذف/ویرایش کن، بعد «جایگزینی کل…» را بزن.
+• اکسل تجمعی محلی: «باز کردن برای ویرایش»، «افزودن جدول» و «جایگزینی کل اکسل محلی با جدول»
+  (برای حذف یا اصلاح ردیف‌های قدیمی: اکسل را باز کن، ردیف‌ها را حذف/ویرایش کن، «جایگزینی کل…» را بزن).
 • اگر فایل بارگذاری‌شده سرستون‌های متفاوتی داشته باشد، افزودن به اکسل تجمعی خطا می‌دهد (ستون‌ها را عوض نکن).
+• ارسال نتایج به گیت‌هاب از برنامه حذف شده است.
 """
 
 
@@ -3625,17 +3621,13 @@ class LogWindow(tk.Toplevel):
 
 
 # ----------------------------------------------------------------------------
-# ورژن ۱۷: جدول نتایج روزانه (CSV) + پوش به ریپوی نتایج در گیت‌هاب
+# ورژن ۱۷: جدول نتایج روزانه (CSV) + اکسل تجمعیِ محلی
 # ----------------------------------------------------------------------------
 RESULTS_DIR = os.path.join(STATE_DIR, "results")
-RESULT_PUSH_PATH = os.path.join(STATE_DIR, "results_push.json")   # کلید (توکن) فقط اینجا و فقط روی همین کامپیوتر می‌ماند
 LAST_RUN_PATH = os.path.join(STATE_DIR, "panel_last_run.json")
-DEFAULT_RESULT_REPO = "valipour121/sarkh-panel"       # همین ریپوی پنل
 DEFAULT_RESULT_XLSX = "sarkhat_result.xlsx"           # یک اکسلِ تجمعی؛ نتایج هر روز به آن اضافه می‌شود
 RESULT_SHEET = "نتایج"
-DEFAULT_RESULT_TOKEN = ""   # مقدار پیش‌فرض کلید؛ در ریپوی عمومی همیشه خالی بماند (فقط در نسخه‌ی شخصی *_local.py پر می‌شود)
 RESULT_NUMERIC_COLS = ("رتبه", "تعداد درخواست")       # در اکسل به‌صورت عدد ذخیره می‌شوند
-GITHUB_API = os.environ.get("SARKH_GITHUB_API", "https://api.github.com")   # فقط برای تست قابل تغییر است
 RESULT_COLUMNS = ["تاریخ", "نام کاربر", "رتبه", "نتیجه", "نام کارگزار", "نام نماد", "سختی نماد",
                   "تریگر", "زمان ارسال", "ورژن برنامه (تکنولوژی)", "تعداد درخواست", "جزئیات درخواست‌ها"]
 SYMBOL_KEYS = ("symbolname", "symbol_name", "symbol", "instrumentname", "instrument_name", "instrument",
@@ -3752,72 +3744,16 @@ def read_results_csv(path):
     return data[0], data[1:]
 
 
-class GithubError(Exception):
-    def __init__(self, msg, status=0):
-        super().__init__(msg)
-        self.status = status
 
 
-def _github_error(r):
-    try:
-        msg = r.json().get("message", "")
-    except Exception:
-        msg = (r.text or "")[:200]
-    hints = {401: "کلید (توکن) نامعتبر یا منقضی است.",
-             403: "کلید اجازه‌ی نوشتن ندارد (برای ریپو باید «Contents: Read and write» داشته باشد).",
-             404: "ریپو پیدا نشد یا کلید به آن دسترسی ندارد (کلید باید برای همین ریپو ساخته شده باشد)."}
-    extra = f" — {hints[r.status_code]}" if r.status_code in hints else ""
-    return f"HTTP {r.status_code}: {msg}{extra}"
 
 
-def _gh_headers(token, raw=False):
-    return {"Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github.raw+json" if raw else "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "sarkh-panel"}
 
 
-def _gh_url(repo, path):
-    return f"{GITHUB_API}/repos/{repo}/contents/{urllib.parse.quote(path.strip('/'))}"
 
 
-def github_get_file(token, repo, path, branch="", timeout=30):
-    """(بایت‌ها، sha) یا (None, None) اگر فایل هنوز نیست. خطا: GithubError."""
-    url = _gh_url(repo, path)
-    params = {"ref": branch} if branch else {}
-    r = requests.get(url, headers=_gh_headers(token), params=params, timeout=timeout)
-    if r.status_code == 404:
-        return None, None
-    if r.status_code != 200:
-        raise GithubError(_github_error(r), r.status_code)
-    info = r.json()
-    if not isinstance(info, dict):
-        raise GithubError("این مسیر یک پوشه است، نه فایل.", 400)
-    b64 = (info.get("content") or "").replace("\n", "")
-    if b64 and info.get("encoding") == "base64":
-        data = base64.b64decode(b64)
-    else:   # فایل‌های بزرگ‌تر از ۱ مگابایت در پاسخ JSON محتوا ندارند؛ نسخه‌ی خام را می‌گیریم
-        r2 = requests.get(url, headers=_gh_headers(token, raw=True), params=params, timeout=timeout)
-        if r2.status_code != 200:
-            raise GithubError(_github_error(r2), r2.status_code)
-        data = r2.content
-    return data, info.get("sha")
 
 
-def github_put_bytes(token, repo, path, content, message, sha=None, branch="", timeout=30):
-    url = _gh_url(repo, path)
-    payload = {"message": message, "content": base64.b64encode(content).decode("ascii")}
-    if sha:
-        payload["sha"] = sha
-    if branch:
-        payload["branch"] = branch
-    r = requests.put(url, headers=_gh_headers(token), json=payload, timeout=timeout)
-    if r.status_code in (200, 201):
-        try:
-            html = (r.json().get("content") or {}).get("html_url", "")
-        except Exception:
-            html = ""
-        return html or f"https://github.com/{repo}/blob/{branch or 'main'}/{path.strip('/')}"
-    raise GithubError(_github_error(r), r.status_code)
 
 
 def _cell_date_str(v):
@@ -3885,27 +3821,6 @@ def xlsx_merge_rows(existing_bytes, header, rows):
     return out.getvalue(), replaced
 
 
-def github_append_results(token, repo, path, header, rows, message, branch="", timeout=30):
-    """فایل اکسل تجمعی را از ریپو می‌گیرد، ردیف‌ها را اضافه می‌کند و دوباره می‌گذارد.
-    خروجی: (True، لینک، تعداد ردیف جایگزین‌شده) یا (False، پیام خطا، 0)"""
-    try:
-        for attempt in range(2):
-            try:
-                data, sha = github_get_file(token, repo, path, branch, timeout)
-                new_bytes, replaced = xlsx_merge_rows(data, header, rows)
-                url = github_put_bytes(token, repo, path, new_bytes, message, sha, branch, timeout)
-                return True, url, replaced
-            except GithubError as e:
-                if attempt == 0 and e.status in (409, 422):
-                    continue   # هم‌زمانی: فایل بین خواندن و نوشتن عوض شده؛ یک بار دیگر از اول
-                return False, str(e), 0
-    except (RuntimeError, ValueError) as e:
-        return False, str(e), 0
-    except requests.RequestException as e:
-        return False, f"خطای شبکه: {e}", 0
-    except Exception as e:
-        return False, f"خطای غیرمنتظره در ساخت/خواندن اکسل: {e}", 0
-    return False, "ناموفق", 0
 
 
 # ---------------------------------------------------------------------------
@@ -4030,86 +3945,37 @@ def local_xlsx_merge(path, header, rows):
     return replaced
 
 
-def _github_guard(fn):
-    try:
-        return fn()
-    except GithubError as e:
-        return False, str(e)
-    except (RuntimeError, ValueError) as e:
-        return False, str(e)
-    except requests.RequestException as e:
-        return False, f"خطای شبکه: {e}"
-    except Exception as e:
-        return False, f"خطای غیرمنتظره: {e}"
 
 
-def github_read_xlsx(token, repo, path, branch="", timeout=30):
-    """(True، (سرستون‌ها، ردیف‌ها)) یا (False، پیام خطا)."""
-    def go():
-        data, _sha = github_get_file(token, repo, path, branch, timeout)
-        if data is None:
-            return False, "این اکسل هنوز در ریپو وجود ندارد."
-        return True, xlsx_read_rows(data)
-    return _github_guard(go)
 
 
-def github_replace_xlsx(token, repo, path, header, rows, message, branch="", timeout=30):
-    """کل اکسل ریپو را با این جدول جایگزین می‌کند (برای حذف/ویرایش ردیف‌ها). (True، لینک) یا (False، خطا)."""
-    def go():
-        for attempt in range(2):
-            try:
-                _data, sha = github_get_file(token, repo, path, branch, timeout)
-                url = github_put_bytes(token, repo, path, xlsx_build(header, rows), message, sha, branch, timeout)
-                return True, url
-            except GithubError as e:
-                if attempt == 0 and e.status in (409, 422):
-                    continue
-                raise
-        return False, "ناموفق"
-    return _github_guard(go)
 
 
 class ResultsWindow(tk.Toplevel):
-    """صفحه‌ی لاگ نتایج: ویرایش جدول، CSV، اکسل تجمعیِ محلی و اکسل تجمعیِ ریپو (همه‌ی کارهای اکسل فقط اینجاست)."""
+    """صفحه‌ی لاگ نتایج: ویرایش جدول، CSV و اکسل تجمعیِ محلی (همه‌ی کارهای اکسل فقط اینجاست)."""
 
     def __init__(self, app, path, header, rows):
         super().__init__(app)
         self.app = app
-        self.title("نتایج روزانه — CSV و اکسل تجمعی (محلی و ریپو)")
+        self.title("نتایج روزانه — CSV و اکسل تجمعی محلی")
         self.geometry("1240x760")
         self.header = list(header) or list(RESULT_COLUMNS)
         self.rows = [list(r) + [""] * (len(self.header) - len(r)) for r in rows]
-        cfg = read_json(RESULT_PUSH_PATH, {}) or {}
-        self.token_var = tk.StringVar(value=cfg.get("token") or DEFAULT_RESULT_TOKEN)
-        self.repo_var = tk.StringVar(value=cfg.get("repo") or DEFAULT_RESULT_REPO)
-        self.xlsx_var = tk.StringVar(value=cfg.get("xlsx") or DEFAULT_RESULT_XLSX)
+        self.xlsx_var = tk.StringVar(value=DEFAULT_RESULT_XLSX)
         self.file_var = tk.StringVar(value=os.path.basename(path))
         self.symbol_var = tk.StringVar()
         self.hard_var = tk.StringVar()
-        self.show_var = tk.BooleanVar(value=False)
-        self.local_too_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value=f"فایل: {path}")
         self._edit = None
-        self._q = queue.Queue()
-        self._busy_btns = []
 
-        top = ttk.LabelFrame(self, text="ریپوی نتایج و کلید دسترسی")
+        top = ttk.LabelFrame(self, text="نام فایل‌ها (کنار برنامه)")
         top.pack(fill="x", padx=6, pady=(6, 0))
-        r1 = ttk.Frame(top)
-        r1.pack(fill="x", pady=2)
-        ttk.Label(r1, text="کلید دسترسی (توکن):").pack(side="left", padx=(6, 2))
-        self.token_entry = ttk.Entry(r1, textvariable=self.token_var, width=56, show="•")
-        self.token_entry.pack(side="left", padx=(0, 6))
-        ttk.Checkbutton(r1, text="نمایش", variable=self.show_var, command=self._toggle_show).pack(side="left")
-        ttk.Label(r1, text="(فقط در results_push.json کنار برنامه ذخیره می‌شود)", foreground="#666").pack(side="left", padx=8)
         r2 = ttk.Frame(top)
         r2.pack(fill="x", pady=2)
-        ttk.Label(r2, text="ریپو (owner/name):").pack(side="left", padx=(6, 2))
-        ttk.Entry(r2, textvariable=self.repo_var, width=28).pack(side="left", padx=(0, 10))
-        ttk.Label(r2, text="اکسل تجمعی (هم در ریپو، هم کنار برنامه):").pack(side="left", padx=(0, 2))
-        ttk.Entry(r2, textvariable=self.xlsx_var, width=22).pack(side="left", padx=(0, 10))
-        ttk.Label(r2, text="نام CSV محلی:").pack(side="left", padx=(0, 2))
-        ttk.Entry(r2, textvariable=self.file_var, width=26).pack(side="left")
+        ttk.Label(r2, text="اکسل تجمعی محلی:").pack(side="left", padx=(6, 2))
+        ttk.Entry(r2, textvariable=self.xlsx_var, width=26).pack(side="left", padx=(0, 14))
+        ttk.Label(r2, text="نام CSV امروز:").pack(side="left", padx=(0, 2))
+        ttk.Entry(r2, textvariable=self.file_var, width=28).pack(side="left")
 
         mid = ttk.LabelFrame(self, text="مقدار یک‌جا برای همه‌ی ردیف‌ها")
         mid.pack(fill="x", padx=6, pady=(6, 0))
@@ -4139,7 +4005,8 @@ class ResultsWindow(tk.Toplevel):
         # ---- کار با فایل‌ها ----
         f1 = ttk.LabelFrame(self, text="فایل محلی (CSV / اکسل)")
         f1.pack(fill="x", padx=6, pady=(0, 4))
-        ttk.Button(f1, text="📂 بارگذاری CSV/اکسل از دیسک", command=self._load_file).pack(side="left", padx=3, pady=3)
+        ttk.Button(f1, text="✅ ذخیره‌ی CSV و افزودن به اکسل محلی", command=self._save_and_append).pack(side="left", padx=3, pady=3)
+        ttk.Button(f1, text="📂 بارگذاری CSV/اکسل از دیسک", command=self._load_file).pack(side="left", padx=3)
         ttk.Button(f1, text="💾 ذخیره‌ی CSV", command=self._save_clicked).pack(side="left", padx=3)
         ttk.Button(f1, text="📤 ذخیره‌ی جدول به‌عنوان… (CSV/اکسل)", command=self._save_as).pack(side="left", padx=3)
 
@@ -4150,16 +4017,6 @@ class ResultsWindow(tk.Toplevel):
                           ("♻ جایگزینی کل اکسل محلی با جدول", self._local_replace)):
             ttk.Button(f2, text=text, command=cmd).pack(side="left", padx=3, pady=3)
 
-        f3 = ttk.LabelFrame(self, text="اکسل تجمعی در ریپو")
-        f3.pack(fill="x", padx=6, pady=(0, 4))
-        self.open_repo_btn = ttk.Button(f3, text="📥 باز کردن اکسل ریپو برای ویرایش", command=self._open_repo_xlsx)
-        self.push_btn = ttk.Button(f3, text="⬆ افزودن جدول به اکسل ریپو", command=self._push)
-        self.replace_repo_btn = ttk.Button(f3, text="♻ جایگزینی کل اکسل ریپو با جدول (حذف/ویرایش ردیف‌ها)", command=self._repo_replace)
-        for b in (self.open_repo_btn, self.push_btn, self.replace_repo_btn):
-            b.pack(side="left", padx=3, pady=3)
-            self._busy_btns.append(b)
-        ttk.Checkbutton(f3, text="هنگام «افزودن به ریپو»، در اکسل محلی هم اضافه شود", variable=self.local_too_var).pack(side="left", padx=12)
-
         bar = ttk.Frame(self)
         bar.pack(fill="x", padx=6, pady=(0, 2))
         ttk.Button(bar, text="بستن", command=self.destroy).pack(side="right", padx=2)
@@ -4168,7 +4025,6 @@ class ResultsWindow(tk.Toplevel):
         ttk.Label(self, text="روی هر خانه دابل‌کلیک کنید تا ویرایش شود (Enter = ثبت، Esc = انصراف). "
                              "«افزودن» ردیف‌های هم‌تاریخ قبلی را جایگزین می‌کند؛ «جایگزینی کل» اکسل را دقیقاً مثل جدول می‌کند.",
                   foreground="#666", wraplength=1200, justify="left").pack(fill="x", padx=8, pady=(0, 6))
-        self.after(150, self._poll)
 
     # ---- جدول ----
     _WIDTHS = {"تاریخ": 85, "نام کاربر": 110, "رتبه": 50, "نتیجه": 150, "نام کارگزار": 85, "نام نماد": 90,
@@ -4219,8 +4075,6 @@ class ResultsWindow(tk.Toplevel):
             note = " — ⚠ سرستون‌ها با قالب استانداردِ برنامه یکی نیست؛ افزودن به اکسل تجمعی ممکن است خطا بدهد."
         self.status_var.set(f"{label} ({len(rows)} ردیف بارگذاری شد؛ جدول: {len(self.rows)} ردیف){note}")
 
-    def _toggle_show(self):
-        self.token_entry.config(show="" if self.show_var.get() else "•")
 
     def _col_index(self, name):
         try:
@@ -4365,6 +4219,29 @@ class ResultsWindow(tk.Toplevel):
         if path.lower().endswith(".csv"):
             self.file_var.set(os.path.basename(path))
 
+    def _save_and_append(self):
+        """CSV را ذخیره می‌کند و ردیف‌های جدول را به اکسل تجمعیِ محلی (کنار برنامه) اضافه می‌کند."""
+        self._end_edit(True)
+        if not self.rows:
+            messagebox.showerror("خطا", "جدول خالی است.", parent=self)
+            return
+        try:
+            csv_path = self._write_local()
+        except OSError as e:
+            messagebox.showerror("خطا", f"ذخیره‌ی فایل CSV ناموفق بود:\n{e}", parent=self)
+            return
+        xlsx_path = self._local_xlsx_path()
+        try:
+            replaced = local_xlsx_merge(xlsx_path, self.header, self.rows)
+        except PermissionError:
+            messagebox.showerror("خطا", f"CSV ذخیره شد، ولی اکسل باز است و نوشته نمی‌شود؛ آن را در اکسل ببندید:\n{xlsx_path}", parent=self)
+            return
+        except (OSError, RuntimeError, ValueError) as e:
+            messagebox.showerror("خطا", f"CSV ذخیره شد، ولی افزودن به اکسل محلی ناموفق بود:\n{e}", parent=self)
+            return
+        extra = f" ({replaced} ردیف قدیمیِ همان تاریخ جایگزین شد)" if replaced else ""
+        self.status_var.set(f"✔ CSV ذخیره شد: {csv_path}   |   ✔ {len(self.rows)} ردیف به اکسل محلی اضافه شد{extra}: {xlsx_path}")
+
     # ---- اکسل تجمعی محلی ----
     def _open_local_xlsx(self):
         path = self._local_xlsx_path()
@@ -4413,137 +4290,11 @@ class ResultsWindow(tk.Toplevel):
             return
         self.status_var.set(f"✔ اکسل محلی با جدول ({len(self.rows)} ردیف) جایگزین شد: {path}")
 
-    # ---- اکسل ریپو ----
-    def _repo_cfg(self):
-        token = self.token_var.get().strip()
-        repo = self.repo_var.get().strip().strip("/")
-        xlsx = self.xlsx_var.get().strip().strip("/")
-        if not token:
-            messagebox.showerror("خطا", "کلید دسترسی (توکن) را بالای جدول وارد کنید.", parent=self)
-            return None
-        if not token.isascii() or any(c.isspace() for c in token):
-            messagebox.showerror("خطا", "کلید فقط شامل حروف انگلیسی/عدد/زیرخط است (فاصله یا متن فارسی نباید داشته باشد).", parent=self)
-            return None
-        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
-            messagebox.showerror("خطا", "ریپو باید به شکل owner/name باشد؛ مثلاً valipour121/sarkh-panel", parent=self)
-            return None
-        if not xlsx or not xlsx.lower().endswith(".xlsx"):
-            messagebox.showerror("خطا", "مسیر فایل اکسل در ریپو باید با .xlsx تمام شود؛ مثلاً sarkhat_result.xlsx", parent=self)
-            return None
-        try:
-            write_json_atomic(RESULT_PUSH_PATH, {"token": token, "repo": repo, "xlsx": xlsx})
-            os.chmod(RESULT_PUSH_PATH, 0o600)
-        except OSError:
-            pass
-        return token, repo, xlsx
 
-    def _busy(self, on):
-        for b in self._busy_btns:
-            b.config(state="disabled" if on else "normal")
 
-    def _open_repo_xlsx(self):
-        self._end_edit(True)
-        cfg = self._repo_cfg()
-        if not cfg:
-            return
-        token, repo, xlsx = cfg
-        self._busy(True)
-        self.status_var.set(f"در حال گرفتن {repo}/{xlsx} ...")
 
-        def work():
-            ok, data = github_read_xlsx(token, repo, xlsx)
-            self._q.put({"kind": "repo_open", "ok": ok, "data": data, "repo": repo, "xlsx": xlsx})
-        threading.Thread(target=work, daemon=True).start()
 
-    def _repo_replace(self):
-        self._end_edit(True)
-        cfg = self._repo_cfg()
-        if not cfg:
-            return
-        token, repo, xlsx = cfg
-        if not messagebox.askyesno("جایگزینی کل اکسل ریپو",
-                                   f"کل {xlsx} در ریپو {repo} دقیقاً با این جدول ({len(self.rows)} ردیف) جایگزین شود؟\n"
-                                   "ردیف‌هایی که در جدول نیستند از ریپو پاک می‌شوند (تاریخچه‌ی گیت می‌ماند).", parent=self):
-            return
-        header, rows = list(self.header), [list(r) for r in self.rows]
-        message = f"ویرایش اکسل نتایج از پنل — {len(rows)} ردیف — {RESULT_TECH_LABEL}"
-        self._busy(True)
-        self.status_var.set(f"در حال جایگزینی {repo}/{xlsx} ...")
 
-        def work():
-            ok, info = github_replace_xlsx(token, repo, xlsx, header, rows, message)
-            self._q.put({"kind": "repo_replace", "ok": ok, "info": info, "repo": repo, "xlsx": xlsx, "n": len(rows)})
-        threading.Thread(target=work, daemon=True).start()
-
-    def _push(self):
-        self._end_edit(True)
-        cfg = self._repo_cfg()
-        if not cfg:
-            return
-        token, repo, xlsx = cfg
-        if not self.rows:
-            messagebox.showerror("خطا", "جدول خالی است.", parent=self)
-            return
-        try:
-            self._write_local()      # CSV همیشه محلی هم ذخیره می‌شود
-        except OSError as e:
-            messagebox.showerror("خطا", f"ذخیره‌ی فایل CSV ناموفق بود:\n{e}", parent=self)
-            return
-        local_note = ""
-        if self.local_too_var.get():
-            lp = self._local_xlsx_path()
-            try:
-                rep = local_xlsx_merge(lp, self.header, self.rows)
-                local_note = f"\nاکسل محلی هم به‌روز شد: {lp}" + (f" ({rep} ردیف همان تاریخ جایگزین شد)" if rep else "")
-            except PermissionError:
-                local_note = f"\n⚠ اکسل محلی باز است و نوشته نشد (در اکسل ببندید): {lp}"
-            except (OSError, RuntimeError, ValueError) as e:
-                local_note = f"\n⚠ افزودن به اکسل محلی ناموفق بود: {e}"
-        header, rows = list(self.header), [list(r) for r in self.rows]
-        dates = sorted({r[0] for r in rows if r and r[0]})
-        message = f"نتایج {'، '.join(dates)} — {len(rows)} ردیف — {RESULT_TECH_LABEL}"
-        self._busy(True)
-        self.status_var.set(f"در حال افزودن به {repo}/{xlsx} ...")
-
-        def work():
-            ok, info, replaced = github_append_results(token, repo, xlsx, header, rows, message)
-            self._q.put({"kind": "push", "ok": ok, "info": info, "repo": repo, "xlsx": xlsx,
-                         "replaced": replaced, "n": len(rows), "local_note": local_note})
-        threading.Thread(target=work, daemon=True).start()
-
-    def _poll(self):
-        if not self.winfo_exists():
-            return
-        try:
-            while True:
-                it = self._q.get_nowait()
-                self._busy(False)
-                kind = it["kind"]
-                if kind == "push":
-                    if it["ok"]:
-                        extra = f" ({it['replaced']} ردیف قدیمیِ همان تاریخ جایگزین شد)" if it["replaced"] else ""
-                        self.status_var.set(f"✔ {it['n']} ردیف به {it['xlsx']} اضافه شد{extra}: {it['info']}")
-                        messagebox.showinfo("انجام شد", f"{it['n']} ردیف به اکسل تجمعی در ریپو {it['repo']} اضافه شد{extra}:\n{it['info']}{it['local_note']}", parent=self)
-                    else:
-                        self.status_var.set(f"✖ ناموفق: {it['info']}")
-                        messagebox.showerror("ناموفق", f"{it['info']}{it['local_note']}", parent=self)
-                elif kind == "repo_open":
-                    if it["ok"]:
-                        header, rows = it["data"]
-                        self._set_table(header, rows, f"اکسل ریپو {it['repo']}/{it['xlsx']}")
-                    else:
-                        self.status_var.set(f"✖ ناموفق: {it['data']}")
-                        messagebox.showerror("ناموفق", it["data"], parent=self)
-                elif kind == "repo_replace":
-                    if it["ok"]:
-                        self.status_var.set(f"✔ اکسل ریپو با جدول ({it['n']} ردیف) جایگزین شد: {it['info']}")
-                        messagebox.showinfo("انجام شد", f"{it['xlsx']} در ریپو با جدول ({it['n']} ردیف) جایگزین شد:\n{it['info']}", parent=self)
-                    else:
-                        self.status_var.set(f"✖ ناموفق: {it['info']}")
-                        messagebox.showerror("ناموفق", it["info"], parent=self)
-        except queue.Empty:
-            pass
-        self.after(150, self._poll)
 
 
 class PanelApp(tk.Tk):
@@ -4687,10 +4438,10 @@ class PanelApp(tk.Tk):
         ttk.Button(toolbar, text="📋 لاگ کل پنل", command=self._open_full_log).pack(side="left", padx=2)
         ttk.Button(toolbar, text="🔢 اعمال پیش‌فرض ردیفی", command=self._apply_row_defaults).pack(side="left", padx=2)
 
-        columns = ("up", "row", "down", "name", "login", "enabled", "broker", "symbol", "volume", "price", "token",
-                   "interval", "trigger", "count", "log")
-        headers = ["▲", "ردیف", "▼", "نام کاربری", "ورود", "فعال", "کارگزاری", "نماد", "حجم", "قیمت", "تاریخ توکن",
-                   "وقفه (ms)", "تریگر", "تعداد", "لاگ"]
+        columns = ("up", "row", "down", "name", "login", "enabled", "broker", "symbol", "volume", "price",
+                   "interval", "trigger", "count", "log", "token")
+        headers = ["▲", "ردیف", "▼", "نام کاربری", "ورود", "فعال", "کارگزاری", "نماد", "حجم", "قیمت",
+                   "وقفه (ms)", "تریگر", "تعداد", "لاگ", "زمان دریافت توکن / انقضا"]
         col_widths = {"up": 32, "row": 42, "down": 32, "name": 110, "login": 170, "enabled": 50, "broker": 80,
                       "symbol": 120, "volume": 75, "price": 85, "token": 210, "interval": 70, "trigger": 60,
                       "count": 50, "log": 90}
@@ -5569,7 +5320,10 @@ class PanelApp(tk.Tk):
             self.test_interval_var.set(str(st["test_interval"]))
         co = st.get("col_order")
         if isinstance(co, list) and sorted(co) == sorted(self._default_col_order):
+            if not self._migrations.get("v17_token_last") and "token" in co:
+                co = [c for c in co if c != "token"] + ["token"]    # یک‌بار: ستون توکن آخرین ستون
             self.tree.configure(displaycolumns=co)
+        self._migrations["v17_token_last"] = True
         if isinstance(st.get("broker_login_urls"), dict):
             self.broker_login_urls = {str(k): str(v) for k, v in st["broker_login_urls"].items() if v}
         geo = st.get("geometry") if with_geometry else None
