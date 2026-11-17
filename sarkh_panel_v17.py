@@ -1472,6 +1472,14 @@ def exir_make_n(nt, path, diff_ms=EXIR_DIFF_MS, now_ms=None):
     return f"{_js_num_str(fl * s_ * i)}.{si}"
 
 
+# تنظیمات مشترک خانواده‌ی اکسیر (آرمون، رضوی، ...): هدر X-App-N متغیر در هر درخواست (نیازمند nt حساب)
+_EXIR_COMMON = {
+    "parse": parse_captured_input,
+    "error_code_fields": (),
+    "x_app_n": True,
+    "debug_volume_keys": ("quantity",),
+}
+
 # broker_key -> broker config. All four currently share the same generic
 # parser/error-code logic; give a broker its own `parse`/`error_code_fields`
 # here later if its capture format or error reporting turns out to differ.
@@ -1491,13 +1499,8 @@ BROKERS = {
         "parse": parse_captured_input,
         "error_code_fields": (),
     },
-    "exir": {
-        "label": "اکسیر",
-        "parse": parse_captured_input,
-        "error_code_fields": (),
-        "x_app_n": True,                           # هدر X-App-N متغیر در هر درخواست (نیازمند nt حساب)
-        "debug_volume_keys": ("quantity",),
-    },
+    "exir": dict(_EXIR_COMMON, label="اکسیر آرمون"),      # کلید «exir» برای سازگاری با حساب‌های قبلی همان مانده
+    "exir_razavi": dict(_EXIR_COMMON, label="اکسیر رضوی"),
     "mofid": {
         "label": "مفید",
         "parse": parse_captured_input,
@@ -1522,7 +1525,7 @@ BROKERS = {
 DEFAULT_ORDER = {
     "interval_ms": 320,
     "trigger": 9800,               # یکان ثانیه + میلی‌ثانیه: 9800 = پایه + 9.800s = 08:44:59.800
-    "count": 5,                    # تعداد درخواست؛ درخواست وسط (تریگر) دقیقاً روی زمان تریگر می‌نشیند
+    "count": 2,                    # تعداد درخواست؛ با ۲ درخواست، تریگر دومین درخواست است (در بقیه: درخواست وسط)
     "stop_on_text": "",
     "defer_log": True,             # نوشتن لاگ بعد از پایان ارسال‌ها (بافر موقت) تا چیزی ارسال را کند نکند
     "stop_after_success": False,   # توقف بعد از اولین ثبت موفق؛ اگر False باشد تا پایان زمان مقرر مداوم می‌فرستد
@@ -1573,11 +1576,18 @@ def fmt_num(v):
     return str(int(f)) if f.is_integer() else str(f)
 
 
+def trigger_before(count):
+    """تعداد درخواست‌های قبل از درخواست تریگر. تعداد ۲ ← ۱ (تریگر = دومین درخواست)؛ در بقیه وسط زنجیره."""
+    count = int(count)
+    return 1 if count == 2 else (count - 1) // 2
+
+
 def compute_schedule(order, base_ts):
     """زمان‌بندی یک حساب را از روی وقفه/تریگر/تعداد می‌سازد.
 
     درخواستِ «تریگر» روی base_ts + trigger_ms می‌نشیند؛ (count-1)//2 درخواست
     قبل از آن و بقیه بعد از آن، هرکدام با فاصله‌ی interval:
+      count=2 -> 1 قبل + تریگر (تریگر = دومین)
       count=5 -> 2 قبل + تریگر + 2 بعد (تریگر = سومین)
       count=8 -> 3 قبل + تریگر + 4 بعد (تریگر = چهارمین)
     خطا: ValueError/TypeError اگر مقدارها معتبر نباشند."""
@@ -1590,7 +1600,7 @@ def compute_schedule(order, base_ts):
     if clamped:
         interval_ms = MIN_INTERVAL_MS
     interval = interval_ms / 1000.0
-    before = (count - 1) // 2
+    before = trigger_before(count)
     trigger_ts = base_ts + trigger_ms / 1000.0
     start_ts = trigger_ts - before * interval
     last_ts = start_ts + (count - 1) * interval
@@ -1603,6 +1613,30 @@ def compute_schedule(order, base_ts):
 
 def ts_str(ts):
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S.%f")[:-3]
+
+
+_TIME_RE = re.compile(r"^\s*(\d{1,2}):(\d{2}):(\d{2})(?:[.,](\d{1,6}))?\s*$")
+RESULT_TIME_COLUMNS = ("تریگر", "زمان ارسال")
+
+
+def short_time(value):
+    """«08:44:59.903» ← «9903» (یکان ثانیه + سه رقم میلی‌ثانیه). مقدارهای غیرزمانی یا از قبل کوتاه‌شده دست‌نخورده می‌مانند."""
+    if hasattr(value, "strftime"):                      # datetime.time / datetime که اکسل ساخته
+        return f"{value.second % 10}{getattr(value, 'microsecond', 0) // 1000:03d}"
+    m = _TIME_RE.match(str(value))
+    if not m:
+        return value
+    frac = ((m.group(4) or "") + "000")[:3]
+    return f"{int(m.group(3)) % 10}{frac}"
+
+
+def normalize_result_row(header, row):
+    """ستون‌های «تریگر» و «زمان ارسال» یک ردیف را به قالب کوتاه (یکان ثانیه + میلی‌ثانیه) درمی‌آورد."""
+    row = list(row)
+    for j, h in enumerate(header):
+        if h in RESULT_TIME_COLUMNS and j < len(row) and row[j] not in (None, ""):
+            row[j] = str(short_time(row[j]))
+    return row
 
 
 HEADER_PLACEHOLDER_HINT = (
@@ -1707,6 +1741,12 @@ GUIDE_LOGIN_TEXT = """ورود خودکار و ثبت خودکار هدر سفا
 ۶. آدرس صفحه‌ی ورود: هر بار آن را برای یک حساب دستی بنویسی، پیش‌فرض همه‌ی حساب‌های همان کارگزار می‌شود
    (حساب‌های بدون آدرس یا با همان آدرس قبلی به‌روز می‌شوند؛ آدرس اختصاصیِ بقیه حفظ می‌شود).
 ۷. نام پوشه‌ی پروفایل کروم = «نام کاربری + نام کارگزاری» (داخل chrome_profiles).
+۸. فیلد هدر (curl) اختیاری است؛ حساب بدون آن هم ساخته می‌شود و هدر را «🔑 ورود» ثبت می‌کند.
+۹. دفترچه‌ی کاربران: با «افزودن حساب» یک لیست کشویی باز می‌شود (اول «➕ کاربر جدید»، بعد کاربران قبلی؛ ۱۰ تا همزمان،
+   بقیه با اسکرول). با کلیک روی نام، کاربر با همه‌ی تنظیماتش به انتهای جدول اضافه می‌شود (وقفه و پیش‌گرمی با ردیف جدید
+   تنظیم می‌شود)، و ✕ کنار هر نام او را از دفترچه حذف می‌کند. دفترچه در پوشه‌ی کاربر ویندوز
+   (~/.sarkh_panel/user_book.json) ذخیره می‌شود، نه کنار برنامه؛ پس با تغییر ورژن یا پوشه‌ی برنامه گم نمی‌شود.
+۱۰. کارگزاری‌های خانواده‌ی اکسیر: «اکسیر آرمون» و «اکسیر رضوی» (هر دو با همان روش X-App-N).
 نیازمندی: pip install websocket-client و نصب بودن گوگل کروم (مسیر دلخواه: متغیر محیطی CHROME_PATH).
 
 اکسیر (exirbroker): هر درخواست سفارش یک هدر X-App-N متغیر دارد (از nt و زمان ساخته می‌شود). پنل همان الگوریتم کد جاوا را
@@ -1750,10 +1790,11 @@ GUIDE_TRIGGER_TEXT = """راهنمای «وقفه / تریگر / تعداد» (�
 • وقفه (ms): فاصله‌ی بین درخواست‌ها.  پیش‌فرض حساب جدید = ۶۰۰ + ۱۰×ردیف (ردیف ۱ ← ۶۱۰، ردیف ۱۰ ← ۷۰۰)
 • تریگر: زمانِ درخواست وسط، فقط به‌صورت «یکان ثانیه + میلی‌ثانیه» = پایه + عدد ms.
   با ساعت پایه‌ی 08:44:50، تریگر 9800 یعنی 08:44:59.800.  پیش‌فرض ۹۸۰۰
-• تعداد: تعداد کل درخواست‌ها.  پیش‌فرض ۵
+• تعداد: تعداد کل درخواست‌ها.  پیش‌فرض ۲ (تریگر = درخواست دوم)
 
-درخواستِ تریگر دقیقاً روی زمان تریگر می‌نشیند؛ (تعداد−۱) تقسیم بر ۲ (رو به پایین)
-درخواست قبل از آن و بقیه بعد از آن، هرکدام با فاصله‌ی «وقفه»:
+درخواستِ تریگر دقیقاً روی زمان تریگر می‌نشیند. با تعداد ۲، یک درخواست قبل از تریگر و تریگر دومین درخواست
+است؛ در تعدادهای دیگر (تعداد−۱) تقسیم بر ۲ (رو به پایین) درخواست قبل از آن و بقیه بعد از آن، هرکدام با فاصله‌ی «وقفه»:
+  تعداد ۲: ۱ قبل + تریگر
   تعداد ۵: ۲ قبل + تریگر + ۲ بعد
   تعداد ۸: ۳ قبل + تریگر + ۴ بعد
 مثال (تریگر 9800، وقفه 320، تعداد 5):
@@ -2028,7 +2069,7 @@ RESULT_TECH_LABEL = "v17 (python)"   # ستون «ورژن برنامه (تکن�
 
 # پیش‌فرض‌های ردیفی: وقفه = 600 + 10×ردیف ، پیش‌گرمی = 400 + 10×ردیف (ردیف از ۱)
 ROW_INTERVAL_BASE_MS = 600
-ROW_LEAD_BASE_MS = 400
+ROW_LEAD_BASE_MS = 800
 ROW_STEP_MS = 10
 
 
@@ -2417,7 +2458,7 @@ class LoginSession(threading.Thread):
         self.conn = None
         self.captured = 0     # تعداد سفارش‌های ثبت‌شده
         self.no_auth = False
-        self.exir = account.get("broker") == "exir"
+        self.exir = bool(BROKERS.get(account.get("broker"), {}).get("x_app_n"))
 
     def _status(self, text):
         self.ui_queue.put(("status", self.account["id"], text))
@@ -2704,19 +2745,19 @@ class AccountDialog(tk.Toplevel):
                   foreground="#666").grid(row=3, column=2, columnspan=2, sticky="w", padx=4, pady=2)
         row += 1
 
-        ttk.Label(self, text="هدر (متن خام curl کپی‌شده از مرورگر، یا کد پایتونِ تبدیل‌شده):").grid(
+        ttk.Label(self, text="هدر (curl — اختیاری؛ با دکمه‌ی «🔑 ورود» خودکار ثبت می‌شود):").grid(
             row=row, column=0, columnspan=3, sticky="w", padx=6, pady=(8, 0))
         row += 1
 
         header_frame = ttk.Frame(self)
         header_frame.grid(row=row, column=0, columnspan=3, sticky="we", padx=6, pady=(0, 4))
-        self.header_text = tk.Text(header_frame, width=90, height=7, wrap="none", font=("Consolas", 10))
+        self.header_text = tk.Text(header_frame, width=90, height=2, wrap="none", font=("Consolas", 9))
         self.header_text.pack(side="left", fill="both", expand=True)
         header_scroll = ttk.Scrollbar(header_frame, command=self.header_text.yview)
         header_scroll.pack(side="right", fill="y")
         self.header_text.configure(yscrollcommand=header_scroll.set)
         existing_header = self.account.get("header", "")
-        self.header_text.insert("1.0", existing_header or HEADER_PLACEHOLDER_HINT)
+        self.header_text.insert("1.0", existing_header)
         row += 1
 
         self.order_frame = ttk.LabelFrame(self, text="تنظیمات ارسال")
@@ -2820,10 +2861,7 @@ class AccountDialog(tk.Toplevel):
         header_text = self.header_text.get("1.0", "end").strip()
         if header_text == HEADER_PLACEHOLDER_HINT.strip():
             header_text = ""
-        login_username = self.login_user_var.get().strip()
-        if not header_text and not login_username:
-            messagebox.showerror("خطا", "یا هدر (curl) را وارد کنید، یا یوزرنیم ورود را بگذارید تا هدر با دکمه‌ی «🔑 ورود» ثبت شود.")
-            return
+        login_username = self.login_user_var.get().strip()   # هدر (curl) اختیاری است؛ خالی هم ذخیره می‌شود
 
         # Validate parse-ability now, so mistakes are caught at save time
         # rather than only when Start is pressed.
@@ -3707,16 +3745,17 @@ def build_result_rows(accounts, logs_by_account, last_run, symbol="", hardness="
             result = ("ناموفق: " + " — ".join(bits))[:140] if bits else "ناموفق"
             sent = last.get("sent_at", "")
         ts = info.get("trigger_ts")
-        trigger = ts_str(ts) if ts else ""
+        trigger = short_time(ts_str(ts)) if ts else ""
         count = info.get("count") or len(recs)
         if ts:   # «زمان ارسال» = زمان واقعیِ ارسال درخواست تریگر (وسطی)؛ گاهی چند میلی‌ثانیه بعد از تریگر است
             try:
-                tn = (int(count) - 1) // 2 + 1
+                tn = trigger_before(count) + 1
             except (TypeError, ValueError):
                 tn = None
             rec_t = next((r for r in recs if r.get("n") == tn), None)
             if rec_t and rec_t.get("sent_at"):
                 sent = rec_t.get("sent_at")
+        sent = short_time(sent)
         detail = " | ".join(f"{r.get('n')}) {r.get('sent_at', '')} {_rec_short(r)}" for r in recs)
         rows.append([
             date, acc.get("name", ""), "", result,
@@ -3934,12 +3973,59 @@ def write_bytes_atomic(path, data):
     os.replace(tmp, path)
 
 
+def xlsx_normalize_times(data, header):
+    """ستون‌های تریگر/زمان ارسالِ «همه‌ی» ردیف‌های یک اکسل را به قالب کوتاه درمی‌آورد (قالب‌بندی فایل حفظ می‌شود).
+    خروجی: (بایت‌های اکسل، تعداد خانه‌های تبدیل‌شده)."""
+    if not data:
+        return data, 0
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(data))
+    ws = wb[RESULT_SHEET] if RESULT_SHEET in wb.sheetnames else wb.active
+    have = [str(ws.cell(row=1, column=j).value or "").strip() for j in range(1, len(header) + 1)]
+    if have != [str(h).strip() for h in header]:
+        return data, 0           # سرستون‌ها فرق دارد؛ دست نمی‌زنیم (افزودن خطای مربوطه را می‌دهد)
+    cols = [j for j, h in enumerate(header, 1) if h in RESULT_TIME_COLUMNS]
+    n = 0
+    for r in range(2, ws.max_row + 1):
+        for j in cols:
+            cell = ws.cell(row=r, column=j)
+            v = cell.value
+            if v is None or v == "":
+                continue
+            nv = short_time(v)
+            if nv is not v and str(nv) != str(v):
+                cell.value = str(nv)
+                cell.number_format = "@"
+                n += 1
+    if not n:
+        return data, 0
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue(), n
+
+
+def normalize_local_xlsx(path, header=None):
+    """اکسل تجمعیِ محلی را (اگر هست) به قالب فعلیِ نتایج می‌رساند. خروجی: تعداد خانه‌های تبدیل‌شده."""
+    if not os.path.exists(path):
+        return 0
+    with open(path, "rb") as f:
+        data = f.read()
+    new, n = xlsx_normalize_times(data, header or list(RESULT_COLUMNS))
+    if n:
+        write_bytes_atomic(path, new)
+    return n
+
+
 def local_xlsx_merge(path, header, rows):
-    """ردیف‌ها را به اکسل تجمعیِ محلی اضافه می‌کند (ردیف‌های هم‌تاریخ جایگزین می‌شوند). خروجی: تعداد جایگزین‌شده."""
+    """ردیف‌ها را به اکسل تجمعیِ محلی اضافه می‌کند (ردیف‌های هم‌تاریخ جایگزین می‌شوند) و قالب «همه‌ی» ردیف‌های
+    قبلی را هم به قالب فعلی می‌رساند. خروجی: تعداد جایگزین‌شده."""
+    rows = [normalize_result_row(header, r) for r in rows]
     existing = b""
     if os.path.exists(path):
         with open(path, "rb") as f:
             existing = f.read()
+        existing, _n = xlsx_normalize_times(existing, header)
     new_bytes, replaced = xlsx_merge_rows(existing, header, rows)
     write_bytes_atomic(path, new_bytes)
     return replaced
@@ -4022,6 +4108,12 @@ class ResultsWindow(tk.Toplevel):
         ttk.Button(bar, text="بستن", command=self.destroy).pack(side="right", padx=2)
         ttk.Label(self, textvariable=self.status_var, foreground="#444", wraplength=1200, justify="left").pack(
             fill="x", padx=8, pady=(0, 2))
+        try:   # هر تغییر قالب نتایج روی «کل» اکسل تجمعیِ محلی هم اعمال می‌شود
+            conv = normalize_local_xlsx(os.path.join(STATE_DIR, DEFAULT_RESULT_XLSX), list(RESULT_COLUMNS))
+            if conv:
+                self.status_var.set(f"✔ {conv} خانه‌ی زمان در اکسل محلی به قالب جدید (یکان ثانیه + میلی‌ثانیه) تبدیل شد.")
+        except (OSError, RuntimeError, ValueError, KeyError):
+            pass
         ttk.Label(self, text="روی هر خانه دابل‌کلیک کنید تا ویرایش شود (Enter = ثبت، Esc = انصراف). "
                              "«افزودن» ردیف‌های هم‌تاریخ قبلی را جایگزین می‌کند؛ «جایگزینی کل» اکسل را دقیقاً مثل جدول می‌کند.",
                   foreground="#666", wraplength=1200, justify="left").pack(fill="x", padx=8, pady=(0, 6))
@@ -4048,7 +4140,7 @@ class ResultsWindow(tk.Toplevel):
         """جدول را با داده‌ی تازه پر می‌کند؛ اگر جدول فعلی ردیف دارد می‌پرسد جایگزین شود یا به انتها اضافه."""
         self._end_edit(True)
         header = list(header) or list(RESULT_COLUMNS)
-        rows = [list(r) + [""] * (len(header) - len(r)) for r in rows]
+        rows = [normalize_result_row(header, list(r) + [""] * (len(header) - len(r))) for r in rows]
         append = False
         if self.rows:
             if header != self.header:
@@ -4166,8 +4258,14 @@ class ResultsWindow(tk.Toplevel):
             name += ".xlsx"
         return os.path.join(STATE_DIR, name)
 
-    def _write_local(self):
+    def _normalize_rows(self):
+        """تریگر/زمان ارسال همه‌ی ردیف‌های جدول به قالب کوتاه (یکان ثانیه + میلی‌ثانیه)."""
         self._end_edit(True)
+        self.rows = [normalize_result_row(self.header, r) for r in self.rows]
+        self._reload_tree()
+
+    def _write_local(self):
+        self._normalize_rows()
         path = self._local_path()
         write_results_csv(path, self.header, self.rows)
         return path
@@ -4181,7 +4279,7 @@ class ResultsWindow(tk.Toplevel):
         self.status_var.set(f"ذخیره شد ({len(self.rows)} ردیف): {path}")
 
     def _save_as(self):
-        self._end_edit(True)
+        self._normalize_rows()
         path = filedialog.asksaveasfilename(
             parent=self, title="ذخیره‌ی جدول", defaultextension=".csv", initialdir=RESULTS_DIR if os.path.isdir(RESULTS_DIR) else STATE_DIR,
             initialfile=os.path.basename(self._local_path()),
@@ -4257,7 +4355,7 @@ class ResultsWindow(tk.Toplevel):
         self._set_table(header, rows, f"اکسل محلی: {path}")
 
     def _local_append(self):
-        self._end_edit(True)
+        self._normalize_rows()
         if not self.rows:
             messagebox.showerror("خطا", "جدول خالی است.", parent=self)
             return
@@ -4274,7 +4372,7 @@ class ResultsWindow(tk.Toplevel):
         self.status_var.set(f"✔ {len(self.rows)} ردیف به اکسل محلی اضافه شد{extra}: {path}")
 
     def _local_replace(self):
-        self._end_edit(True)
+        self._normalize_rows()
         path = self._local_xlsx_path()
         if not messagebox.askyesno("جایگزینی کل اکسل محلی",
                                    f"کل فایل\n{path}\nدقیقاً با این جدول ({len(self.rows)} ردیف) جایگزین شود؟\n"
@@ -4295,6 +4393,129 @@ class ResultsWindow(tk.Toplevel):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# دفترچه‌ی کاربران: کاربرانی که قبلاً ذخیره/ارسال کرده‌اند. جایش پوشه‌ی برنامه نیست (پوشه‌ی کاربر ویندوز)،
+# پس با تغییر ورژن/پوشه‌ی برنامه از دسترس خارج نمی‌شوند.
+# ---------------------------------------------------------------------------
+BOOK_PATH = os.path.join(os.path.expanduser("~"), ".sarkh_panel", "user_book.json")
+
+
+def book_key(acc):
+    return (str(acc.get("name", "")).strip().lower(), acc.get("broker", ""))
+
+
+def load_book():
+    data = read_json(BOOK_PATH, [])
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict) and e.get("name") and e.get("broker")]
+
+
+def save_book(entries):
+    try:
+        write_json_atomic(BOOK_PATH, entries)
+        os.chmod(BOOK_PATH, 0o600)
+    except OSError:
+        pass
+
+
+class UserBookPicker(tk.Toplevel):
+    """لیست کشویی دفترچه‌ی کاربران: اول «کاربر جدید»، بعد کاربران قبلی (۱۰ تا همزمان دیده می‌شود، بقیه با اسکرول)،
+    و کنار هر نام یک ✕ برای حذف از دفترچه."""
+    VISIBLE = 10
+    ROW_H = 30
+
+    def __init__(self, parent, entries, anchor, on_new, on_pick, on_delete):
+        super().__init__(parent)
+        self.title("دفترچه کاربران")
+        self.transient(parent)
+        self.resizable(False, False)
+        self.on_new, self.on_pick, self.on_delete = on_new, on_pick, on_delete
+        self.entries = list(entries)
+        self._rows = {}
+
+        ttk.Button(self, text="➕  کاربر جدید", command=self._new).pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=6, pady=2)
+        wrap = ttk.Frame(self)
+        wrap.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.canvas = tk.Canvas(wrap, width=340, height=self._height(), highlightthickness=0)
+        self.sb = ttk.Scrollbar(wrap, command=self.canvas.yview)
+        self.inner = ttk.Frame(self.canvas)
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.sb.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        for e in self.entries:
+            self._add_row(e)
+        self._update_scroll()
+        self.canvas.bind_all("<MouseWheel>", self._wheel)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Destroy>", self._on_destroy)
+        try:
+            x = anchor.winfo_rootx()
+            y = anchor.winfo_rooty() + anchor.winfo_height()
+            self.geometry(f"+{x}+{y}")
+        except (AttributeError, tk.TclError):
+            pass
+        self.after(80, self._grab)
+
+    def _grab(self):
+        try:
+            self.grab_set()
+            self.focus_set()
+        except tk.TclError:
+            pass
+
+    def _on_destroy(self, event):
+        if event.widget is self:
+            try:
+                self.canvas.unbind_all("<MouseWheel>")
+            except tk.TclError:
+                pass
+
+    def _wheel(self, event):
+        if len(self._rows) > self.VISIBLE:
+            self.canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _height(self):
+        return max(1, min(len(self.entries), self.VISIBLE)) * self.ROW_H
+
+    def _update_scroll(self):
+        self.canvas.configure(height=self._height())
+        if len(self.entries) > self.VISIBLE:
+            self.sb.pack(side="right", fill="y")
+        else:
+            self.sb.pack_forget()
+
+    def _add_row(self, entry):
+        fr = ttk.Frame(self.inner)
+        fr.pack(fill="x", pady=1)
+        label = BROKERS.get(entry.get("broker"), {}).get("label", entry.get("broker", ""))
+        ttk.Button(fr, text=f"{entry.get('name', '')}  —  {label}", width=38,
+                   command=lambda e=entry: self._pick(e)).pack(side="left", fill="x", expand=True)
+        ttk.Button(fr, text="✕", width=3, command=lambda e=entry: self._delete(e)).pack(side="left", padx=(3, 0))
+        self._rows[id(entry)] = fr
+
+    def _new(self):
+        self.destroy()
+        self.on_new()
+
+    def _pick(self, entry):
+        self.destroy()
+        self.on_pick(entry)
+
+    def _delete(self, entry):
+        label = BROKERS.get(entry.get("broker"), {}).get("label", entry.get("broker", ""))
+        if not messagebox.askyesno("حذف از دفترچه", f"«{entry.get('name', '')} — {label}» از دفترچه‌ی کاربران حذف شود؟", parent=self):
+            return
+        self.on_delete(entry)
+        fr = self._rows.pop(id(entry), None)
+        if fr is not None:
+            fr.destroy()
+        self.entries = [e for e in self.entries if e is not entry]
+        self._update_scroll()
 
 
 class PanelApp(tk.Tk):
@@ -4332,6 +4553,8 @@ class PanelApp(tk.Tk):
         self.login_status = {}          # account id -> متن ستون «ورود»
         self._info_cache = {}           # account id -> (کلید، مشخصات سفارش)
         self.broker_login_urls = {}     # کارگزار -> آدرس صفحه‌ی ورودِ پیش‌فرض (از آخرین ویرایش دستی)
+        self.book = load_book()         # دفترچه‌ی کاربران (در پوشه‌ی کاربر ویندوز؛ مستقل از ورژن برنامه)
+        self._sync_book(missing_only=True)
         self._muted = False             # ۵ثانیه مانده به شروع: گوش‌دادن به پروفایل‌ها قطع است
         self._listen_job = None
         self.phase = "idle"             # idle / waiting / sending / test / done / stopped (برای شمارش معکوس)
@@ -4422,7 +4645,8 @@ class PanelApp(tk.Tk):
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", padx=6, pady=6)
 
-        ttk.Button(toolbar, text="افزودن حساب", command=self._add_account).pack(side="left", padx=2)
+        self._add_btn = ttk.Button(toolbar, text="افزودن حساب", command=self._add_account)
+        self._add_btn.pack(side="left", padx=2)
         ttk.Button(toolbar, text="ویرایش", command=self._edit_account).pack(side="left", padx=2)
         ttk.Button(toolbar, text="حذف", command=self._delete_account).pack(side="left", padx=2)
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=6)
@@ -4672,6 +4896,58 @@ class PanelApp(tk.Tk):
     def _run_active(self):
         return bool(self.workers) and any(w.is_alive() for w in self.workers)
 
+    def _acc_by_id(self, acc_id):
+        return next((a for a in self.accounts if a.get("id") == acc_id), None)
+
+    def _sync_book(self, only=None, touch=True, missing_only=False):
+        """حساب‌ها را در دفترچه ذخیره/به‌روز می‌کند. touch=True: کاربر بالای لیست می‌آید. missing_only: فقط جاافتاده‌ها."""
+        idx = {book_key(e): i for i, e in enumerate(self.book)}
+        now = time.time()
+        changed = False
+        for acc in (only if only is not None else self.accounts):
+            if not acc.get("name") or not acc.get("broker"):
+                continue
+            k = book_key(acc)
+            if missing_only and k in idx:
+                continue
+            entry = json.loads(json.dumps(acc, default=str))
+            entry.pop("id", None)
+            entry["book_ts"] = now if (touch or k not in idx) else self.book[idx[k]].get("book_ts", now)
+            if k in idx:
+                self.book[idx[k]] = entry
+            else:
+                idx[k] = len(self.book)
+                self.book.append(entry)
+            changed = True
+        if changed:
+            save_book(self.book)
+
+    def _book_delete(self, entry):
+        k = book_key(entry)
+        self.book = [e for e in self.book if book_key(e) != k]
+        save_book(self.book)
+
+    def _add_from_book(self, entry):
+        acc = json.loads(json.dumps(entry))
+        acc.pop("book_ts", None)
+        acc["id"] = str(uuid.uuid4())
+        acc["enabled"] = True
+        for k, dv in (("login_username", ""), ("login_password", ""), ("login_url", ""),
+                      ("order_keyword", "order"), ("exir_nt", ""), ("header", "")):
+            acc.setdefault(k, dv)
+        row = len(self.accounts) + 1
+        order = acc.setdefault("order", {})
+        for k, dv in DEFAULT_ORDER.items():
+            order.setdefault(k, dv)
+        order["interval_ms"] = float(row_default_interval(row))      # وقفه/پیش‌گرمی با ردیف جدید
+        order["warm_lead_ms"] = str(row_default_lead(row))
+        self.accounts.append(acc)
+        self.logs_by_account.setdefault(acc["id"], [])
+        self._propagate_login_url(acc)
+        save_accounts(self.accounts)
+        self._refresh_table()
+        self._sync_book(only=[acc], touch=True)
+
     def _propagate_login_url(self, acc):
         """آدرس ورودِ دستی‌شده برای یک حساب ← پیش‌فرض همه‌ی حساب‌های همان کارگزار
         (حساب‌هایی که آدرس خالی یا همان آدرسِ پیش‌فرضِ قبلی دارند به‌روز می‌شوند؛ آدرس اختصاصیِ بقیه حفظ می‌شود)."""
@@ -4911,6 +5187,16 @@ class PanelApp(tk.Tk):
         ttk.Button(win, text="بستن", command=win.destroy).pack(pady=(0, 8))
 
     def _add_account(self):
+        """لیست کشویی دفترچه‌ی کاربران (اول «کاربر جدید»)؛ اگر کاربر قبلیِ اضافه‌نشده‌ای نباشد، مستقیم فرم کاربر جدید."""
+        present = {book_key(a) for a in self.accounts}
+        cands = sorted((e for e in self.book if book_key(e) not in present),
+                       key=lambda e: -float(e.get("book_ts") or 0))
+        if not cands:
+            self._add_new_account()
+            return
+        UserBookPicker(self, cands, self._add_btn, self._add_new_account, self._add_from_book, self._book_delete)
+
+    def _add_new_account(self):
         dlg = AccountDialog(self, row=len(self.accounts) + 1)
         self.wait_window(dlg)
         if dlg.result:
@@ -4918,6 +5204,7 @@ class PanelApp(tk.Tk):
             self._propagate_login_url(dlg.result)
             save_accounts(self.accounts)
             self._refresh_table()
+            self._sync_book(only=[dlg.result], touch=True)
 
     def _edit_account(self):
         idx = self._selected_index()
@@ -4931,6 +5218,7 @@ class PanelApp(tk.Tk):
             self._propagate_login_url(dlg.result)
             save_accounts(self.accounts)
             self._refresh_table()
+            self._sync_book(only=[dlg.result], touch=True)
 
     def _delete_account(self):
         idx = self._selected_index()
@@ -5035,6 +5323,8 @@ class PanelApp(tk.Tk):
                             break
                     save_accounts(self.accounts)
                     changed = True
+                    if self._acc_by_id(acc_id):
+                        self._sync_book(only=[self._acc_by_id(acc_id)], touch=True)
                 elif kind == "response":
                     try:
                         obj = json.loads(item[2])
@@ -5058,6 +5348,8 @@ class PanelApp(tk.Tk):
                             break
                     save_accounts(self.accounts)
                     changed = True
+                    if self._acc_by_id(acc_id):
+                        self._sync_book(only=[self._acc_by_id(acc_id)], touch=True)
                 elif kind == "ended":
                     self.login_sessions.pop(acc_id, None)
         except queue.Empty:
@@ -5279,6 +5571,7 @@ class PanelApp(tk.Tk):
             self.stop_btn.config(state="disabled")
             self.workers = []
             gc.enable()
+            self._sync_book(only=[a for a in self.accounts if self.logs_by_account.get(a.get("id"))], touch=True)
             if self.phase in ("waiting", "sending", "test"):
                 self._cancel_countdown()
                 self._cancel_listen_job()
