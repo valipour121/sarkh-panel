@@ -1424,6 +1424,54 @@ class WarmPool:
                     pass
 
 
+# ---------------------------------------------------------------------------
+# اکسیر (exirbroker.com): هر درخواست سفارش یک هدر X-App-N متغیر دارد که از «nt» جلسه
+# (localStorage.session.userInfo.nt) و زمان ساخته می‌شود. دقیقاً همان الگوریتم کد جاوای قبلی؛
+# nt هنگام «🔑 ورود» از خودِ کروم خوانده و در حساب ذخیره می‌شود.
+# ---------------------------------------------------------------------------
+EXIR_DIFF_MS = -6000      # همان «X-App-N diff ms» کد جاوا
+
+
+def _js_parse_float(text):
+    m = re.match(r"\s*[+-]?(?:\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)", text or "")
+    return float(m.group(0)) if m else float("nan")
+
+
+def _js_num_str(x):
+    """مثل String(number) در جاوااسکریپت (برای مقدارهای بسیار بزرگ هم دقیقاً همان قالب)."""
+    if x != x:
+        return "NaN"
+    if x in (float("inf"), float("-inf")):
+        return "Infinity" if x > 0 else "-Infinity"
+    if abs(x) >= 1e21:
+        return repr(x)
+    if x == int(x):
+        if abs(x) < 1e16:
+            return str(int(x))
+        from decimal import Decimal
+        return format(Decimal(repr(x)), "f")
+    return repr(x)
+
+
+def exir_make_n(nt, path, diff_ms=EXIR_DIFF_MS, now_ms=None):
+    """معادل تابع makeN(url, diffMs) در کد جاوا. path = مسیر درخواست (مثلاً /api/v1/order)."""
+    nt = str(nt)
+    l = nt[2:]
+    if len(l) - 5 <= 0:
+        raise ValueError("مقدار nt بیش از حد کوتاه است")
+    i = sum(ord(c) for c in path)
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    t = (int(now_ms) // 1000) * 1000 - 2000 + int(math.floor(float(diff_ms) + 0.5))
+    s_ = (t // 1000) % 86400                      # ثانیه‌ی روز به UTC (getUTCHours*3600 + ...)
+    fp = _js_parse_float(nt[:2])
+    idx = 0 if math.isnan(fp) else abs(s_ % (len(l) - 5) - int(math.floor(fp)))
+    num = _js_parse_float(l[idx:idx + 5])
+    si = s_ * i
+    fl = num if (math.isnan(num) or math.isinf(num)) else float(math.floor(num))
+    return f"{_js_num_str(fl * s_ * i)}.{si}"
+
+
 # broker_key -> broker config. All four currently share the same generic
 # parser/error-code logic; give a broker its own `parse`/`error_code_fields`
 # here later if its capture format or error reporting turns out to differ.
@@ -1447,6 +1495,8 @@ BROKERS = {
         "label": "اکسیر",
         "parse": parse_captured_input,
         "error_code_fields": (),
+        "x_app_n": True,                           # هدر X-App-N متغیر در هر درخواست (نیازمند nt حساب)
+        "debug_volume_keys": ("quantity",),
     },
     "mofid": {
         "label": "مفید",
@@ -1658,6 +1708,12 @@ GUIDE_LOGIN_TEXT = """ورود خودکار و ثبت خودکار هدر سفا
    (حساب‌های بدون آدرس یا با همان آدرس قبلی به‌روز می‌شوند؛ آدرس اختصاصیِ بقیه حفظ می‌شود).
 ۷. نام پوشه‌ی پروفایل کروم = «نام کاربری + نام کارگزاری» (داخل chrome_profiles).
 نیازمندی: pip install websocket-client و نصب بودن گوگل کروم (مسیر دلخواه: متغیر محیطی CHROME_PATH).
+
+اکسیر (exirbroker): هر درخواست سفارش یک هدر X-App-N متغیر دارد (از nt و زمان ساخته می‌شود). پنل همان الگوریتم کد جاوا را
+خودش در هر درخواست اجرا می‌کند؛ لازم نیست چیزی در کنسول پیست کنی. فقط یک بار «🔑 ورود» را بزن و سفارش بفرست: هدر و
+مقدار nt جلسه (از localStorage خودِ کروم) خودکار در حساب ذخیره می‌شود. بقیه‌ی ویژگی‌ها (تریگر، وقفه، اتصال گرم، دیباگ حجم،
+نتایج) برای اکسیر هم مثل سایر کارگزاری‌هاست. اگر nt را دستی داری، در تنظیمات حساب در فیلد «nt (فقط اکسیر)» بگذار.
+جابه‌جایی ستون‌ها: عنوان هر ستونِ جدول را بگیر و روی ستون دیگر رها کن؛ ترتیب ذخیره می‌شود.
 کنار شماره‌ی ردیف دو فلش هست: ▲ = رفتن به ردیف ۱ ، ▼ = رفتن به ردیف آخر. با هر تغییر ترتیب (فلش، درگ، حذف)،
 وقفه (600+10×ردیف) و پیش‌گرمی (400+10×ردیف) حساب‌هایی که ردیفشان عوض شده خودکار به‌روز می‌شود.
 شمارش معکوس بالای پنل تا ۱ ثانیه مانده به شروع کار می‌کند، بعد «یا علی» می‌نویسد و دیگر چیزی به‌روز نمی‌شود.
@@ -1741,7 +1797,7 @@ def load_accounts():
             if k not in order:
                 order[k] = DEFAULT_ORDER[k]
                 changed = True
-        for k, dv in (("login_username", ""), ("login_password", ""), ("login_url", ""), ("order_keyword", "order")):
+        for k, dv in (("login_username", ""), ("login_password", ""), ("login_url", ""), ("order_keyword", "order"), ("exir_nt", "")):
             if k not in acc:
                 acc[k] = dv
                 changed = True
@@ -2196,7 +2252,7 @@ class CDPConnection:
 _PERSIAN_RE = re.compile(r"[\u0600-\u06FF]")
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]*")
 _PRICE_KEYS = ("price", "orderprice", "limitprice", "unitprice", "rate")
-_SYMBOL_KEY_HINTS = ("symbol", "instrument", "namad", "نماد", "stock", "security")
+_SYMBOL_KEY_HINTS = ("symbol", "instrument", "namad", "نماد", "stock", "security", "insmaxlcode")
 
 
 def header_hash(text):
@@ -2327,6 +2383,10 @@ def looks_like_order(body_text):
     return has_vol and (has_price or has_sym)
 
 
+EXIR_NT_JS = ('(function(){try{var n=JSON.parse(localStorage.getItem("session")).userInfo.nt;'
+              'return n==null?null:String(n);}catch(e){return null;}})()')
+
+
 def _safe_name(text):
     return re.sub(r'[\\/:*?"<>|\s]+', "_", text).strip("._") or "profile"
 
@@ -2361,6 +2421,7 @@ class LoginSession(threading.Thread):
         self.conn = None
         self.captured = 0     # تعداد سفارش‌های ثبت‌شده
         self.no_auth = False
+        self.exir = account.get("broker") == "exir"
 
     def _status(self, text):
         self.ui_queue.put(("status", self.account["id"], text))
@@ -2434,6 +2495,7 @@ class LoginSession(threading.Thread):
         attach_cmds = {}   # command id -> targetId
         post_cmds = {}     # command id -> request key
         body_cmds = {}     # command id -> hash هدر ثبت‌شده (getResponseBody)
+        nt_cmds = {}       # command id -> True (خواندن nt اکسیر از localStorage صفحه)
         reqs = {}          # (sessionId, requestId) -> candidate POST
         extras = {}        # (sessionId, requestId) -> full headers incl. cookies
         resp_keys = {}     # درخواست‌های ثبت‌شده که منتظر پاسخشان هستیم -> hash هدر
@@ -2456,6 +2518,15 @@ class LoginSession(threading.Thread):
                         if key in reqs:
                             reqs[key]["postData"] = (msg.get("result") or {}).get("postData", "")
                             reqs[key]["post_done"] = True
+                    elif cid in nt_cmds:
+                        nt_cmds.pop(cid)
+                        val = (((msg.get("result") or {}).get("result")) or {}).get("value")
+                        if isinstance(val, str) and len(val) >= 8:
+                            self.ui_queue.put(("exir_nt", acc["id"], val))
+                            self._status(f"✔ آخرین سفارش ثبت شد (#{self.captured}) + nt اکسیر ✔ — کروم را خودتان ببندید")
+                        else:
+                            self._status(f"⚠ سفارش ثبت شد (#{self.captured}) ولی nt اکسیر پیدا نشد "
+                                         "(localStorage.session.userInfo.nt) — در تنظیمات حساب دستی وارد کنید")
                     elif cid in body_cmds:
                         hh = body_cmds.pop(cid)
                         res = msg.get("result") or {}
@@ -2525,6 +2596,9 @@ class LoginSession(threading.Thread):
                     self.captured += 1
                     self._status(("⚠ ثبت شد ولی کوکی/توکنی در درخواست نبود" if self.no_auth else
                                   f"✔ آخرین سفارش ثبت شد (#{self.captured})") + " — کروم را خودتان ببندید")
+                    if self.exir:    # nt جلسه‌ی اکسیر برای ساخت X-App-N
+                        cid = self.conn.send("Runtime.evaluate", {"expression": EXIR_NT_JS, "returnByValue": True}, key[0])
+                        nt_cmds[cid] = True
                     if key in finished:
                         finished.discard(key)
                         cid = self.conn.send("Network.getResponseBody", {"requestId": key[1]}, key[0])
@@ -2627,6 +2701,11 @@ class AccountDialog(tk.Toplevel):
         ttk.Entry(login_frame, textvariable=self.order_kw_var, width=20).grid(row=2, column=1, sticky="w", padx=4, pady=2)
         ttk.Label(login_frame, text="اولین POST که آدرسش این کلمه را داشته باشد به‌عنوان سفارش ثبت می‌شود",
                   foreground="#666").grid(row=2, column=2, columnspan=2, sticky="w", padx=4, pady=2)
+        self.exir_nt_var = tk.StringVar(value=self.account.get("exir_nt", ""))
+        ttk.Label(login_frame, text="nt (فقط اکسیر):").grid(row=3, column=0, sticky="e", padx=4, pady=2)
+        ttk.Entry(login_frame, textvariable=self.exir_nt_var, width=26, show="•").grid(row=3, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(login_frame, text="کلید ساخت توکن متغیر؛ با دکمه‌ی «🔑 ورود» خودکار از کروم گرفته می‌شود",
+                  foreground="#666").grid(row=3, column=2, columnspan=2, sticky="w", padx=4, pady=2)
         row += 1
 
         ttk.Label(self, text="هدر (متن خام curl کپی‌شده از مرورگر، یا کد پایتونِ تبدیل‌شده):").grid(
@@ -2802,6 +2881,9 @@ class AccountDialog(tk.Toplevel):
             "order_keyword": self.order_kw_var.get().strip() or "order",
             "order": order,
         }
+        self.result["exir_nt"] = self.exir_nt_var.get().strip()
+        if "exir_diff_ms" in self.account:
+            self.result["exir_diff_ms"] = self.account["exir_diff_ms"]
         if self.account.get("capture_meta"):
             self.result["capture_meta"] = self.account["capture_meta"]
         self.destroy()
@@ -2949,6 +3031,21 @@ class OrderWorker(threading.Thread):
         params = parsed["params"]
         json_body = parsed["json_body"]
         data = parsed["data"]
+
+        # --- اکسیر: هدر X-App-N برای هر درخواست از nt و زمان ساخته می‌شود ---
+        x_app_n = None
+        if spec.get("x_app_n"):
+            nt_val = str(self.account.get("exir_nt") or "").strip()
+            if len(nt_val) < 8:
+                self.log("⚠ برای اکسیر مقدار «nt» حساب لازم است (با دکمه‌ی «🔑 ورود» از کروم گرفته می‌شود یا در تنظیمات حساب وارد کنید) — ارسال انجام نشد.")
+                return
+            try:
+                x_app_n = {"nt": nt_val, "path": urllib.parse.urlsplit(url).path,
+                           "diff": float(self.account.get("exir_diff_ms", EXIR_DIFF_MS))}
+                exir_make_n(x_app_n["nt"], x_app_n["path"], x_app_n["diff"])   # اعتبارسنجی اولیه
+            except (ValueError, TypeError) as e:
+                self.log(f"⚠ ساخت X-App-N ممکن نیست: {e} — ارسال انجام نشد.")
+                return
 
         # --- تیکت سفارش: اگر بدنه‌ی درخواست orderTicket دارد، قبل از هر ارسال
         # تیکت تازه جایگزین می‌شود (به‌جای تیکت کهنه‌ی لحظه‌ی کپی‌کردن curl).
@@ -3206,9 +3303,15 @@ class OrderWorker(threading.Thread):
                 "net_error": "", "net_error_label": "",
             }
             try:
+                req_headers = headers
+                if x_app_n:
+                    req_headers = dict(headers)
+                    for _k in [k for k in req_headers if str(k).lower() == "x-app-n"]:
+                        del req_headers[_k]
+                    req_headers["X-App-N"] = exir_make_n(x_app_n["nt"], x_app_n["path"], x_app_n["diff"])
                 if pool is not None:
                     target_, hdrs_, body_ = build_request_parts(
-                        method, url, headers, cookies, params,
+                        method, url, req_headers, cookies, params,
                         body_to_send if json_body is not None else None,
                         data_to_send if json_body is None else None,
                         pool.host_header,
@@ -3231,7 +3334,7 @@ class OrderWorker(threading.Thread):
                     raw["conn_kind"] = "عادی"
                     resp = requests.request(
                         method, url,
-                        headers=headers, cookies=cookies, params=params,
+                        headers=req_headers, cookies=cookies, params=params,
                         json=body_to_send, data=data_to_send if json_body is None else None,
                         timeout=5,
                     )
@@ -3536,7 +3639,7 @@ GITHUB_API = os.environ.get("SARKH_GITHUB_API", "https://api.github.com")   # ف
 RESULT_COLUMNS = ["تاریخ", "نام کاربر", "رتبه", "نتیجه", "نام کارگزار", "نام نماد", "سختی نماد",
                   "تریگر", "زمان ارسال", "ورژن برنامه (تکنولوژی)", "تعداد درخواست", "جزئیات درخواست‌ها"]
 SYMBOL_KEYS = ("symbolname", "symbol_name", "symbol", "instrumentname", "instrument_name", "instrument",
-               "isin", "symbolisin", "namad", "نماد")
+               "isin", "symbolisin", "namad", "نماد", "insmaxlcode")
 
 
 def _find_symbol_in(obj, depth=0):
@@ -3614,6 +3717,14 @@ def build_result_rows(accounts, logs_by_account, last_run, symbol="", hardness="
         ts = info.get("trigger_ts")
         trigger = ts_str(ts) if ts else ""
         count = info.get("count") or len(recs)
+        if ts:   # «زمان ارسال» = زمان واقعیِ ارسال درخواست تریگر (وسطی)؛ گاهی چند میلی‌ثانیه بعد از تریگر است
+            try:
+                tn = (int(count) - 1) // 2 + 1
+            except (TypeError, ValueError):
+                tn = None
+            rec_t = next((r for r in recs if r.get("n") == tn), None)
+            if rec_t and rec_t.get("sent_at"):
+                sent = rec_t.get("sent_at")
         detail = " | ".join(f"{r.get('n')}) {r.get('sent_at', '')} {_rec_short(r)}" for r in recs)
         rows.append([
             date, acc.get("name", ""), "", result,
@@ -3800,6 +3911,65 @@ def github_append_results(token, repo, path, header, rows, message, branch="", t
 # ---------------------------------------------------------------------------
 # کار با اکسل نتایج: خواندن/نوشتن محلی، ویرایش کامل، جایگزینی در ریپو (v17)
 # ---------------------------------------------------------------------------
+class ColumnDragger:
+    """جابه‌جایی ستون‌های Treeview با درگ‌اندروپ روی عنوان ستون‌ها (فقط ترتیب نمایش عوض می‌شود)."""
+
+    def __init__(self, tree, on_change=None):
+        self.tree = tree
+        self.on_change = on_change
+        self._src = None
+        self._x0 = 0
+        self._moved = False
+        tree.bind("<ButtonPress-1>", self._press, add="+")
+        tree.bind("<B1-Motion>", self._motion, add="+")
+        tree.bind("<ButtonRelease-1>", self._release, add="+")
+
+    def _display_ids(self):
+        disp = list(self.tree.cget("displaycolumns"))
+        if not disp or disp == ["#all"]:
+            return list(self.tree.cget("columns"))
+        return disp
+
+    def _press(self, e):
+        self._src = None
+        if self.tree.identify_region(e.x, e.y) != "heading":
+            return
+        col = self.tree.identify_column(e.x)
+        if col and col != "#0":
+            self._src = int(col[1:]) - 1
+            self._x0 = e.x
+            self._moved = False
+
+    def _motion(self, e):
+        if self._src is not None and abs(e.x - self._x0) > 8:
+            self._moved = True
+            try:
+                self.tree.configure(cursor="exchange")
+            except tk.TclError:
+                pass
+
+    def _release(self, e):
+        src, self._src = self._src, None
+        try:
+            self.tree.configure(cursor="")
+        except tk.TclError:
+            pass
+        if src is None or not self._moved:
+            return
+        ids = self._display_ids()
+        col = self.tree.identify_column(e.x)
+        if col and col != "#0":
+            dst = int(col[1:]) - 1
+        else:
+            dst = 0 if e.x < 0 else len(ids) - 1
+        if not (0 <= src < len(ids)) or not (0 <= dst < len(ids)) or src == dst:
+            return
+        ids.insert(dst, ids.pop(src))
+        self.tree.configure(displaycolumns=ids)
+        if self.on_change:
+            self.on_change(ids)
+
+
 def _xl_cell_str(v):
     if v is None:
         return ""
@@ -3963,6 +4133,7 @@ class ResultsWindow(tk.Toplevel):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", self._on_double_click)
+        ColumnDragger(self.tree)      # ترتیب نمایش ستون‌ها با درگ عنوان قابل تغییر است
         self._setup_columns()
 
         # ---- کار با فایل‌ها ----
@@ -4006,7 +4177,7 @@ class ResultsWindow(tk.Toplevel):
 
     def _setup_columns(self):
         cols = [f"c{i}" for i in range(len(self.header))]
-        self.tree.configure(columns=cols)
+        self.tree.configure(columns=cols, displaycolumns="#all")
         for c, h in zip(cols, self.header):
             self.tree.heading(c, text=h)
             self.tree.column(c, width=self._WIDTHS.get(h, 100), anchor="center")
@@ -4085,13 +4256,17 @@ class ResultsWindow(tk.Toplevel):
         col = self.tree.identify_column(event.x)
         if not iid or not col:
             return
-        self._begin_edit(int(iid), int(col[1:]) - 1)
+        try:
+            ci = int(self.tree.column(col, "id")[1:])     # شماره‌ی ستونِ داده (مستقل از ترتیب نمایش)
+        except (tk.TclError, ValueError):
+            return
+        self._begin_edit(int(iid), ci)
 
     def _begin_edit(self, ri, ci):
         self._end_edit(True)
         if not (0 <= ri < len(self.rows)) or not (0 <= ci < len(self.header)):
             return
-        bbox = self.tree.bbox(str(ri), f"#{ci + 1}")
+        bbox = self.tree.bbox(str(ri), f"c{ci}")
         if not bbox:
             return
         x, y, w, h = bbox
@@ -4512,19 +4687,22 @@ class PanelApp(tk.Tk):
         ttk.Button(toolbar, text="📋 لاگ کل پنل", command=self._open_full_log).pack(side="left", padx=2)
         ttk.Button(toolbar, text="🔢 اعمال پیش‌فرض ردیفی", command=self._apply_row_defaults).pack(side="left", padx=2)
 
-        columns = ("row", "name", "login", "enabled", "broker", "symbol", "volume", "price", "token",
+        columns = ("up", "row", "down", "name", "login", "enabled", "broker", "symbol", "volume", "price", "token",
                    "interval", "trigger", "count", "log")
-        headers = ["ردیف", "نام کاربری", "ورود", "فعال", "کارگزاری", "نماد", "حجم", "قیمت", "تاریخ توکن",
+        headers = ["▲", "ردیف", "▼", "نام کاربری", "ورود", "فعال", "کارگزاری", "نماد", "حجم", "قیمت", "تاریخ توکن",
                    "وقفه (ms)", "تریگر", "تعداد", "لاگ"]
-        col_widths = {"row": 85, "name": 110, "login": 170, "enabled": 50, "broker": 80, "symbol": 120,
-                      "volume": 75, "price": 85, "token": 210, "interval": 70, "trigger": 60, "count": 50, "log": 90}
+        col_widths = {"up": 32, "row": 42, "down": 32, "name": 110, "login": 170, "enabled": 50, "broker": 80,
+                      "symbol": 120, "volume": 75, "price": 85, "token": 210, "interval": 70, "trigger": 60,
+                      "count": 50, "log": 90}
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=20)
         for c, h in zip(columns, headers):
             self.tree.heading(c, text=h)
-            self.tree.column(c, width=col_widths[c], anchor="center")
+            # ستون‌ها با پنجره کش نمی‌آیند (ناحیه‌ی کلیک فلش‌ها ثابت می‌ماند)
+            self.tree.column(c, width=col_widths[c], anchor="center", stretch=(c in ("login", "token")))
         self._cell_edit = None
+        self._default_col_order = list(columns)
         self.tree.pack(side="left", fill="both", expand=True)
         tree_scroll = ttk.Scrollbar(tree_frame, command=self.tree.yview)
         tree_scroll.pack(side="right", fill="y")
@@ -4533,6 +4711,8 @@ class PanelApp(tk.Tk):
         self.tree.bind("<ButtonPress-1>", self._on_tree_press)
         self.tree.bind("<B1-Motion>", self._on_tree_motion)
         self.tree.bind("<ButtonRelease-1>", self._on_tree_release)
+        # درگ عنوان ستون = جابه‌جایی ستون (باید بعد از bindهای بالا بیاید تا جایگزینشان نشود)
+        ColumnDragger(self.tree, on_change=lambda ids: self._queue_settings_save())
         self._drag_iid = None
         self._drag_start_y = None
         self._drag_moved = False
@@ -4552,7 +4732,7 @@ class PanelApp(tk.Tk):
             order = acc.get("order", {})
             info = self._order_info(acc)
             self.tree.insert("", "end", iid=str(idx), values=(
-                f"▲  {idx + 1}  ▼",
+                "▲", idx + 1, "▼",
                 acc.get("name", ""),
                 self.login_status.get(acc.get("id"), "🔑 ورود"),
                 "✔" if acc.get("enabled") else "—",
@@ -4574,18 +4754,32 @@ class PanelApp(tk.Tk):
         row = self.tree.identify_row(event.y)
         if region != "cell" or not row:
             return
-        col = self.tree.identify_column(event.x)  # e.g. '#10'
-        col_index = int(col.replace("#", "")) - 1
-        columns = self.tree["columns"]
+        cid = self._col_id_at(event.x)
         idx = int(row)
-        if 0 <= col_index < len(columns) and columns[col_index] == "log":
+        if cid == "log":
             self._open_log_window(idx)
-        elif 0 <= col_index < len(columns) and columns[col_index] == "login":
+        elif cid == "login":
             self._open_login(idx)
-        elif 0 <= col_index < len(columns) and columns[col_index] in ("row", "enabled", "interval", "trigger", "count"):
-            pass  # تغییر وضعیت فعال/غیرفعال با یک کلیک ساده انجام می‌شود، نه دابل‌کلیک
+        elif cid in ("up", "row", "down", "enabled", "interval", "trigger", "count"):
+            pass  # فلش‌ها/فعال/وقفه/تریگر/تعداد با یک کلیک ساده کار می‌کنند، نه دابل‌کلیک
         else:
             self._edit_account()
+
+    def _current_col_order(self):
+        disp = list(self.tree.cget("displaycolumns"))
+        if not disp or disp == ["#all"]:
+            return list(self.tree.cget("columns"))
+        return disp
+
+    def _col_id_at(self, x):
+        """شناسه‌ی ستونِ زیر ماوس (مستقل از ترتیبی که کاربر با درگ داده)."""
+        col = self.tree.identify_column(x)
+        if not col or col == "#0":
+            return ""
+        try:
+            return self.tree.column(col, "id")
+        except tk.TclError:
+            return ""
 
     def _on_tree_press(self, event):
         region = self.tree.identify("region", event.x, event.y)
@@ -4597,13 +4791,12 @@ class PanelApp(tk.Tk):
     def _on_tree_motion(self, event):
         if self._drag_iid is None:
             return
-        if self._drag_start_y is not None and abs(event.y - self._drag_start_y) > 4:
-            self._drag_moved = True
-        if not self._drag_moved:
+        if self._drag_start_y is None or abs(event.y - self._drag_start_y) <= 4:
             return
         target_row = self.tree.identify_row(event.y)
         if target_row and target_row != self._drag_iid:
             self.tree.move(self._drag_iid, "", self.tree.index(target_row))
+            self._drag_moved = True      # فقط وقتی واقعاً ردیف جابه‌جا شد «درگ» حساب می‌شود (لرزش ماوس در کلیک اثری ندارد)
 
     def _on_tree_release(self, event):
         if self._drag_iid is None:
@@ -4631,36 +4824,27 @@ class PanelApp(tk.Tk):
             self._after_reorder(before)
             return
 
-        # یک کلیک ساده (بدون درگ): اگر روی ستون «فعال/غیرفعال» بود، تغییرش بده.
+        # یک کلیک ساده (بدون درگ): فلش‌ها / فعال‌شدن / ویرایش درجا
         region = self.tree.identify("region", event.x, event.y)
         if region != "cell":
             return
-        col = self.tree.identify_column(event.x)
+        cid = self._col_id_at(event.x)
         try:
-            col_index = int(col.replace("#", "")) - 1
+            idx = int(dragged_iid)
         except ValueError:
             return
-        columns = self.tree["columns"]
-        if 0 <= col_index < len(columns) and columns[col_index] == "row":
-            try:
-                idx = int(dragged_iid)
-            except ValueError:
+        if cid in ("up", "down"):
+            now = time.time()
+            last = getattr(self, "_arrow_last", None)
+            # دابل‌کلیک روی همان فلش: کلیک دوم بعد از جابه‌جایی روی ردیفِ دیگری می‌افتد؛ نادیده گرفته می‌شود
+            if last and last[0] == (cid, idx) and now - last[1] < 0.5:
                 return
-            bbox = self.tree.bbox(dragged_iid, "#%d" % (col_index + 1))
-            if bbox:
-                rel = (event.x - bbox[0]) / float(max(1, bbox[2]))
-                if rel < 0.34:
-                    self._move_account(idx, "top")
-                elif rel > 0.66:
-                    self._move_account(idx, "bottom")
-        elif 0 <= col_index < len(columns) and columns[col_index] == "enabled":
-            try:
-                idx = int(dragged_iid)
-            except ValueError:
-                return
+            self._arrow_last = ((cid, idx), now)
+            self._move_account(idx, "top" if cid == "up" else "bottom")
+        elif cid == "enabled":
             self._toggle_enabled(idx)
-        elif 0 <= col_index < len(columns) and columns[col_index] in ("interval", "trigger", "count"):
-            self._begin_cell_edit(dragged_iid, columns[col_index])
+        elif cid in ("interval", "trigger", "count"):
+            self._begin_cell_edit(dragged_iid, cid)
 
     _CELL_FIELDS = {"interval": "interval_ms", "trigger": "trigger", "count": "count"}
 
@@ -4673,8 +4857,7 @@ class PanelApp(tk.Tk):
             return
         if not (0 <= idx < len(self.accounts)):
             return
-        columns = self.tree["columns"]
-        bbox = self.tree.bbox(iid, "#%d" % (list(columns).index(key) + 1))
+        bbox = self.tree.bbox(iid, key)
         if not bbox:
             return
         x, y, w, h = bbox
@@ -5117,6 +5300,13 @@ class PanelApp(tk.Tk):
                                 save_accounts(self.accounts)
                                 changed = True
                                 break
+                elif kind == "exir_nt":
+                    for acc in self.accounts:
+                        if acc.get("id") == acc_id:
+                            acc["exir_nt"] = item[2]
+                            break
+                    save_accounts(self.accounts)
+                    changed = True
                 elif kind == "ended":
                     self.login_sessions.pop(acc_id, None)
         except queue.Empty:
@@ -5364,6 +5554,7 @@ class PanelApp(tk.Tk):
             "test_interval": self.test_interval_var.get(),
             "geometry": geo,
             "broker_login_urls": dict(getattr(self, "broker_login_urls", {})),
+            "col_order": self._current_col_order(),
             "migrations": dict(getattr(self, "_migrations", {})),
         }
 
@@ -5376,6 +5567,9 @@ class PanelApp(tk.Tk):
             self.test_count_var.set(str(st["test_count"]))
         if st.get("test_interval"):
             self.test_interval_var.set(str(st["test_interval"]))
+        co = st.get("col_order")
+        if isinstance(co, list) and sorted(co) == sorted(self._default_col_order):
+            self.tree.configure(displaycolumns=co)
         if isinstance(st.get("broker_login_urls"), dict):
             self.broker_login_urls = {str(k): str(v) for k, v in st["broker_login_urls"].items() if v}
         geo = st.get("geometry") if with_geometry else None
