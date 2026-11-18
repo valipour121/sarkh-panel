@@ -4706,21 +4706,24 @@ class PanelApp(tk.Tk):
         for idx, acc in enumerate(self.accounts):
             order = acc.get("order", {})
             info = self._order_info(acc)
-            self.tree.insert("", "end", iid=str(idx), values=(
-                "▲", idx + 1, "▼",
-                acc.get("name", ""),
-                self.login_status.get(acc.get("id"), "🔑 ورود"),
-                "✔" if acc.get("enabled") else "—",
-                BROKERS.get(acc.get("broker"), {}).get("label", acc.get("broker")),
-                info["symbol"] or "—",
-                info["volume"] or "—",
-                info["price"] or "—",
-                info["token"] or "—",
-                fmt_num(order.get("interval_ms", "")),
-                order.get("trigger", DEFAULT_ORDER["trigger"]),
-                order.get("count", DEFAULT_ORDER["count"]),
-                "📄 مشاهده لاگ",
-            ))
+            # مقدارها بر اساس «شناسه‌ی ستون» چیده می‌شوند، نه جایگاه؛ پس با هر ترتیبِ ستون‌ها درست می‌مانند
+            vals = {
+                "up": "▲", "row": idx + 1, "down": "▼",
+                "name": acc.get("name", ""),
+                "login": self.login_status.get(acc.get("id"), "🔑 ورود"),
+                "enabled": "✔" if acc.get("enabled") else "—",
+                "broker": BROKERS.get(acc.get("broker"), {}).get("label", acc.get("broker")),
+                "symbol": info["symbol"] or "—",
+                "volume": info["volume"] or "—",
+                "price": info["price"] or "—",
+                "interval": fmt_num(order.get("interval_ms", "")),
+                "trigger": order.get("trigger", DEFAULT_ORDER["trigger"]),
+                "count": order.get("count", DEFAULT_ORDER["count"]),
+                "log": "📄 مشاهده لاگ",
+                "token": info["token"] or "—",
+            }
+            self.tree.insert("", "end", iid=str(idx),
+                             values=tuple(vals.get(c, "") for c in self.tree["columns"]))
         if sel and self.tree.exists(sel[0]):
             self.tree.selection_set(sel[0])
 
