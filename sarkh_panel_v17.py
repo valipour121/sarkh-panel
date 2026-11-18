@@ -1472,13 +1472,58 @@ def exir_make_n(nt, path, diff_ms=EXIR_DIFF_MS, now_ms=None):
     return f"{_js_num_str(fl * s_ * i)}.{si}"
 
 
-# تنظیمات مشترک خانواده‌ی اکسیر (آرمون، رضوی، ...): هدر X-App-N متغیر در هر درخواست (نیازمند nt حساب)
+def exir_i_candidates(url):
+    """متن‌هایی که ممکن است سایت برای محاسبه‌ی «i» (مجموع کدهای حروف) به‌کار ببرد؛ اولی (مسیر) معمول است."""
+    sp = urllib.parse.urlsplit(url)
+    out = []
+    for c in (sp.path, sp.path + ("?" + sp.query if sp.query else ""), url, sp.path.lstrip("/"), "/api/v1/order"):
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
+def exir_verify(header_value, nt, i_texts):
+    """X-App-N واقعیِ ثبت‌شده از مرورگر را با الگوریتم و nt می‌سنجد (بدون نیاز به دانستن زمان).
+    خروجی: (s، متنِ i) اگر بخواند، وگرنه None. s = ثانیه‌ی روزِ استفاده‌شده در همان درخواست."""
+    m = re.match(r"^\s*(-?\d+)\.(\d+)\s*$", str(header_value or ""))
+    nt = str(nt or "")
+    l = nt[2:]
+    if not m or len(l) - 5 <= 0:
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    fp = _js_parse_float(nt[:2])
+    for text in i_texts:
+        i = sum(ord(c) for c in text)
+        if i <= 0 or b % i:
+            continue
+        s_ = b // i
+        if not (0 <= s_ < 86400):
+            continue
+        idx = 0 if math.isnan(fp) else abs(s_ % (len(l) - 5) - int(math.floor(fp)))
+        num = _js_parse_float(l[idx:idx + 5])
+        if not math.isnan(num) and not math.isinf(num) and int(math.floor(num)) * b == a:
+            return s_, text
+    return None
+
+
+def exir_calibrate_diff(s_, wall_time):
+    """diff (ms) که با آن X-App-N ما همان ثانیه‌ی X-App-N واقعیِ مرورگر را می‌سازد (wall_time = زمان ارسال درخواست، epoch)."""
+    d = (int(s_) - (int(math.floor(float(wall_time))) - 2)) % 86400
+    if d >= 43200:
+        d -= 86400
+    return d * 1000
+
+
+# تنظیمات مشترک خانواده‌ی اکسیر (آرمون، رضوی، کاریزما، ...): هدر X-App-N متغیر در هر درخواست (نیازمند nt حساب)
 _EXIR_COMMON = {
     "parse": parse_captured_input,
     "error_code_fields": (),
     "x_app_n": True,
     "debug_volume_keys": ("quantity",),
 }
+
+# آدرس پیش‌فرض صفحه‌ی ورود (اگر کاربر برای آن کارگزار آدرسی نگذاشته باشد)
+BROKER_DEFAULT_LOGIN_URLS = {"exir_razavi": "https://razavi.exirbroker.com"}
 
 # broker_key -> broker config. All four currently share the same generic
 # parser/error-code logic; give a broker its own `parse`/`error_code_fields`
@@ -1494,11 +1539,7 @@ BROKERS = {
         "parse": parse_captured_input,
         "error_code_fields": (),
     },
-    "karizma": {
-        "label": "کاریزما",
-        "parse": parse_captured_input,
-        "error_code_fields": (),
-    },
+    "karizma": dict(_EXIR_COMMON, label="اکسیر کاریزما"),      # کاریزما هم روی بستر اکسیر است؛ کلید «karizma» برای حساب‌های قبلی ماند
     "exir": dict(_EXIR_COMMON, label="اکسیر آرمون"),      # کلید «exir» برای سازگاری با حساب‌های قبلی همان مانده
     "exir_razavi": dict(_EXIR_COMMON, label="اکسیر رضوی"),
     "mofid": {
@@ -1746,7 +1787,13 @@ GUIDE_LOGIN_TEXT = """ورود خودکار و ثبت خودکار هدر سفا
    بقیه با اسکرول). با کلیک روی نام، کاربر با همه‌ی تنظیماتش به انتهای جدول اضافه می‌شود (وقفه و پیش‌گرمی با ردیف جدید
    تنظیم می‌شود)، و ✕ کنار هر نام او را از دفترچه حذف می‌کند. دفترچه در پوشه‌ی کاربر ویندوز
    (~/.sarkh_panel/user_book.json) ذخیره می‌شود، نه کنار برنامه؛ پس با تغییر ورژن یا پوشه‌ی برنامه گم نمی‌شود.
-۱۰. کارگزاری‌های خانواده‌ی اکسیر: «اکسیر آرمون» و «اکسیر رضوی» (هر دو با همان روش X-App-N).
+۱۰. اکسیر یک بستر معاملاتی است و چند کارگزار روی آن کار می‌کنند: «اکسیر آرمون»، «اکسیر رضوی» و «اکسیر کاریزما». هر سه با روش
+    X-App-N کار می‌کنند، ولی هر کارگزار حساب و آدرس خودش را دارد (مثلاً رضوی: https://razavi.exirbroker.com که پیش‌فرض
+    صفحه‌ی ورودش است). هنگام «🔑 ورود» پنل X-App-N واقعیِ همان سفارش را با الگوریتم می‌سنجد: nt درست را از بین مقدارهای
+    localStorage/sessionStorage انتخاب می‌کند، متنِ مسیر و اختلاف ساعتِ سایت با کامپیوتر (diff) را از روی درخواست واقعی
+    تنظیم می‌کند و وضعیت «X-App-N تأیید شد ✔» را در ستون ورود می‌نویسد. اگر تأیید نشود، هشدار می‌دهد.
+۱۱. قبل از «شروع» و «تست»، اگر حسابی هدر نداشته باشد، nt اکسیر نداشته باشد یا X-App-N ثبت‌شده‌اش با nt نخواند،
+    فهرست مشکلات نشان داده می‌شود (به‌جای اینکه حساب بی‌صدا ارسال نکند).
 نیازمندی: pip install websocket-client و نصب بودن گوگل کروم (مسیر دلخواه: متغیر محیطی CHROME_PATH).
 
 اکسیر (exirbroker): هر درخواست سفارش یک هدر X-App-N متغیر دارد (از nt و زمان ساخته می‌شود). پنل همان الگوریتم کد جاوا را
@@ -2420,8 +2467,26 @@ def looks_like_order(body_text):
     return has_vol and (has_price or has_sym)
 
 
-EXIR_NT_JS = ('(function(){try{var n=JSON.parse(localStorage.getItem("session")).userInfo.nt;'
-              'return n==null?null:String(n);}catch(e){return null;}})()')
+EXIR_NT_JS = r"""(function(){
+  var out=[];
+  function add(v){ if(typeof v==="number") v=String(v); if(typeof v==="string"&&v.length>=8&&out.indexOf(v)<0) out.push(v); }
+  function walk(o,d){
+    if(!o||d>6) return;
+    if(typeof o==="string"){ var c=o.charAt(0); if(c==="{"||c==="["){ try{ walk(JSON.parse(o),d+1); }catch(e){} } return; }
+    if(typeof o!=="object") return;
+    for(var k in o){ var v=o[k]; if(k==="nt") add(v); walk(v,d+1); }
+  }
+  try{
+    [localStorage,sessionStorage].forEach(function(st){
+      for(var i=0;i<st.length;i++){ var key=st.key(i), raw=st.getItem(key); if(key==="nt") add(raw); walk(raw,0); }
+    });
+  }catch(e){}
+  try{
+    var u=JSON.parse(localStorage.getItem("session")).userInfo.nt;
+    if(u!=null){ u=String(u); var j=out.indexOf(u); if(j>0) out.splice(j,1); if(j!==0) out.unshift(u); }
+  }catch(e){}
+  return JSON.stringify(out);
+})()"""
 
 
 def _safe_name(text):
@@ -2557,13 +2622,7 @@ class LoginSession(threading.Thread):
                             reqs[key]["post_done"] = True
                     elif cid in nt_cmds:
                         nt_cmds.pop(cid)
-                        val = (((msg.get("result") or {}).get("result")) or {}).get("value")
-                        if isinstance(val, str) and len(val) >= 8:
-                            self.ui_queue.put(("exir_nt", acc["id"], val))
-                            self._status(f"✔ آخرین سفارش ثبت شد (#{self.captured}) + nt اکسیر ✔ — کروم را خودتان ببندید")
-                        else:
-                            self._status(f"⚠ سفارش ثبت شد (#{self.captured}) ولی nt اکسیر پیدا نشد "
-                                         "(localStorage.session.userInfo.nt) — در تنظیمات حساب دستی وارد کنید")
+                        self._handle_nt((((msg.get("result") or {}).get("result")) or {}).get("value"))
                     elif cid in body_cmds:
                         hh = body_cmds.pop(cid)
                         res = msg.get("result") or {}
@@ -2596,6 +2655,7 @@ class LoginSession(threading.Thread):
                                 "headers": req.get("headers") or {},
                                 "postData": post, "seen": time.time(),
                                 "post_done": bool(post) or not req.get("hasPostData"),
+                                "wall": params.get("wallTime"),
                             }
                             reqs[key] = entry
                             if not entry["post_done"]:
@@ -2668,8 +2728,40 @@ class LoginSession(threading.Thread):
         headers = {orig: val for low, (orig, val) in merged.items() if low not in SKIP_CAPTURE_HEADERS}
         curl = build_curl(entry["url"], entry["method"], headers, entry.get("postData") or "")
         self.no_auth = not ("cookie" in merged or "authorization" in merged)
+        self._xapp = {"value": (merged.get("x-app-n") or (None, None))[1], "wall": entry.get("wall"), "url": entry["url"]}
         self.ui_queue.put(("captured", self.account["id"], curl, time.time()))
         return header_hash(curl)
+
+    def _handle_nt(self, raw):
+        """nt جلسه‌ی اکسیر را از localStorage/sessionStorage می‌گیرد و با X-App-N واقعیِ همین سفارش می‌سنجد؛
+        اگر بخواند، nt، متنِ i و diff (ثانیه‌ی ساعتِ سایت نسبت به ساعت این کامپیوتر) خودکار تنظیم می‌شود."""
+        try:
+            cands = [c for c in (json.loads(raw) if raw else []) if isinstance(c, str) and len(c) >= 8]
+        except (ValueError, TypeError):
+            cands = []
+        ctx = getattr(self, "_xapp", None) or {}
+        tag = f"(#{self.captured})"
+        end = " — کروم را خودتان ببندید"
+        aid = self.account["id"]
+        if not cands:
+            self._status(f"⚠ سفارش ثبت شد {tag} ولی nt اکسیر در localStorage پیدا نشد — در تنظیمات حساب دستی وارد کنید")
+            return
+        if not ctx.get("value"):
+            self.ui_queue.put(("exir_nt", aid, cands[0], {}))
+            self._status(f"✔ سفارش ثبت شد {tag} (در این درخواست X-App-N نبود){end}")
+            return
+        for nt in cands:
+            hit = exir_verify(ctx["value"], nt, exir_i_candidates(ctx["url"]))
+            if hit:
+                s_, itext = hit
+                extra = {"i_text": itext}
+                if ctx.get("wall"):
+                    extra["diff_ms"] = exir_calibrate_diff(s_, ctx["wall"])
+                self.ui_queue.put(("exir_nt", aid, nt, extra))
+                self._status(f"✔ سفارش ثبت شد {tag} — X-App-N با درخواست واقعی مرورگر تأیید شد ✔{end}")
+                return
+        self.ui_queue.put(("exir_nt", aid, cands[0], None))
+        self._status(f"⚠ سفارش ثبت شد {tag} ولی X-App-N واقعی با الگوریتم/nt نمی‌خواند — ارسال ممکن است رد شود")
 
 
 class AccountDialog(tk.Toplevel):
@@ -2789,7 +2881,8 @@ class AccountDialog(tk.Toplevel):
         self.header_text.focus_set()
 
     def _broker_default_url(self, broker_key):
-        return (getattr(self.master, "broker_login_urls", {}) or {}).get(broker_key, "")
+        return ((getattr(self.master, "broker_login_urls", {}) or {}).get(broker_key, "")
+                or BROKER_DEFAULT_LOGIN_URLS.get(broker_key, ""))
 
     def _on_broker_change(self, _event=None):
         key = self.label_to_key.get(self.broker_var.get())
@@ -2916,8 +3009,9 @@ class AccountDialog(tk.Toplevel):
             "order": order,
         }
         self.result["exir_nt"] = self.exir_nt_var.get().strip()
-        if "exir_diff_ms" in self.account:
-            self.result["exir_diff_ms"] = self.account["exir_diff_ms"]
+        for _k in ("exir_diff_ms", "exir_i_text"):
+            if _k in self.account:
+                self.result[_k] = self.account[_k]
         if self.account.get("capture_meta"):
             self.result["capture_meta"] = self.account["capture_meta"]
         self.destroy()
@@ -3069,17 +3163,21 @@ class OrderWorker(threading.Thread):
         # --- اکسیر: هدر X-App-N برای هر درخواست از nt و زمان ساخته می‌شود ---
         x_app_n = None
         if spec.get("x_app_n"):
-            nt_val = str(self.account.get("exir_nt") or "").strip()
-            if len(nt_val) < 8:
-                self.log("⚠ برای اکسیر مقدار «nt» حساب لازم است (با دکمه‌ی «🔑 ورود» از کروم گرفته می‌شود یا در تنظیمات حساب وارد کنید) — ارسال انجام نشد.")
-                return
-            try:
-                x_app_n = {"nt": nt_val, "path": urllib.parse.urlsplit(url).path,
-                           "diff": float(self.account.get("exir_diff_ms", EXIR_DIFF_MS))}
-                exir_make_n(x_app_n["nt"], x_app_n["path"], x_app_n["diff"])   # اعتبارسنجی اولیه
-            except (ValueError, TypeError) as e:
-                self.log(f"⚠ ساخت X-App-N ممکن نیست: {e} — ارسال انجام نشد.")
-                return
+            if not any(str(k).lower() == "x-app-n" for k in headers):
+                self.log("ℹ در درخواستِ ثبت‌شده هدر X-App-N نیست؛ بدون آن ارسال می‌شود.")
+            else:
+                nt_val = str(self.account.get("exir_nt") or "").strip()
+                if len(nt_val) < 8:
+                    self.log("⚠ برای اکسیر مقدار «nt» حساب لازم است (با دکمه‌ی «🔑 ورود» از کروم گرفته می‌شود یا در تنظیمات حساب وارد کنید) — ارسال انجام نشد.")
+                    return
+                try:
+                    x_app_n = {"nt": nt_val,
+                               "path": self.account.get("exir_i_text") or urllib.parse.urlsplit(url).path,
+                               "diff": float(self.account.get("exir_diff_ms", EXIR_DIFF_MS))}
+                    exir_make_n(x_app_n["nt"], x_app_n["path"], x_app_n["diff"])   # اعتبارسنجی اولیه
+                except (ValueError, TypeError) as e:
+                    self.log(f"⚠ ساخت X-App-N ممکن نیست: {e} — ارسال انجام نشد.")
+                    return
 
         # --- تیکت سفارش: اگر بدنه‌ی درخواست orderTicket دارد، قبل از هر ارسال
         # تیکت تازه جایگزین می‌شود (به‌جای تیکت کهنه‌ی لحظه‌ی کپی‌کردن curl).
@@ -5265,7 +5363,8 @@ class PanelApp(tk.Tk):
             return
         snap = dict(acc)
         if not (snap.get("login_url") or "").strip():
-            snap["login_url"] = self.broker_login_urls.get(acc.get("broker"), "")
+            snap["login_url"] = (self.broker_login_urls.get(acc.get("broker"), "")
+                                 or BROKER_DEFAULT_LOGIN_URLS.get(acc.get("broker"), ""))
         sess = LoginSession(snap, chrome, self.ui_queue)
         self.login_sessions[acc_id] = sess
         self.login_status[acc_id] = "⏳ در حال باز شدن…"
@@ -5348,6 +5447,15 @@ class PanelApp(tk.Tk):
                     for acc in self.accounts:
                         if acc.get("id") == acc_id:
                             acc["exir_nt"] = item[2]
+                            extra = item[3] if len(item) > 3 else {}
+                            if extra is None:                       # تأیید نشد: کالیبراسیونِ قبلی معتبر نیست
+                                acc.pop("exir_i_text", None)
+                                acc.pop("exir_diff_ms", None)
+                            else:
+                                if extra.get("i_text"):
+                                    acc["exir_i_text"] = extra["i_text"]
+                                if "diff_ms" in extra:
+                                    acc["exir_diff_ms"] = extra["diff_ms"]
                             break
                     save_accounts(self.accounts)
                     changed = True
@@ -5360,6 +5468,45 @@ class PanelApp(tk.Tk):
         if changed:
             self._refresh_table()
 
+    def _preflight(self, accounts):
+        """مشکل‌هایی که باعث می‌شود یک حساب اصلاً ارسال نکند یا درخواستش رد شود؛ قبل از شروع به کاربر نشان داده می‌شود."""
+        problems = []
+        for a in accounts:
+            name = a.get("name", "?")
+            hdr = (a.get("header") or "").strip()
+            spec = BROKERS.get(a.get("broker"), {})
+            if not hdr:
+                problems.append(f"• {name}: هدر (curl) ندارد — با «🔑 ورود» ثبت کنید.")
+                continue
+            try:
+                parsed = (spec.get("parse") or parse_captured_input)(hdr)
+            except CapturedRequestError as e:
+                problems.append(f"• {name}: هدر قابل خواندن نیست ({e})")
+                continue
+            if spec.get("x_app_n"):
+                xv = next((v for k, v in parsed["headers"].items() if str(k).lower() == "x-app-n"), None)
+                if xv is None:
+                    continue
+                nt = (a.get("exir_nt") or "").strip()
+                if len(nt) < 8:
+                    problems.append(f"• {name}: «nt» اکسیر ندارد (با «🔑 ورود» گرفته می‌شود یا در تنظیمات حساب وارد کنید).")
+                else:
+                    texts = exir_i_candidates(parsed["url"])
+                    if a.get("exir_i_text"):
+                        texts.insert(0, a["exir_i_text"])
+                    if not exir_verify(xv, nt, texts):
+                        problems.append(f"• {name}: X-App-N ثبت‌شده با nt/الگوریتم نمی‌خواند (دوباره با «🔑 ورود» سفارش بفرستید).")
+        return problems
+
+    def _confirm_preflight(self, enabled):
+        problems = self._preflight(enabled)
+        if not problems:
+            return True
+        return messagebox.askyesno(
+            "هشدار قبل از شروع",
+            "این حساب‌ها مشکل دارند و احتمالاً ارسال نمی‌شوند یا رد می‌شوند:\n\n" + "\n".join(problems) +
+            "\n\nبا همین وضعیت ادامه بدهم؟")
+
     def _start_all(self):
         if self.workers and any(w.is_alive() for w in self.workers):
             messagebox.showerror("خطا", "یک اجرا (شروع یا تست) در حال انجام است؛ صبر کنید تمام شود یا آن را متوقف کنید.")
@@ -5370,6 +5517,8 @@ class PanelApp(tk.Tk):
         enabled = [a for a in self.accounts if a.get("enabled")]
         if not enabled:
             messagebox.showinfo("راهنما", "هیچ حساب فعالی وجود ندارد.")
+            return
+        if not self._confirm_preflight(enabled):
             return
 
         try:
@@ -5466,6 +5615,8 @@ class PanelApp(tk.Tk):
         enabled = [a for a in self.accounts if a.get("enabled")]
         if not enabled:
             messagebox.showinfo("راهنما", "هیچ حساب فعالی وجود ندارد.")
+            return
+        if not self._confirm_preflight(enabled):
             return
 
         try:
